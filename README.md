@@ -1,1 +1,1 @@
-# Open-Hedge
+# Open Hedge
