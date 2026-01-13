@@ -1,5 +1,6 @@
 // SearchPage.jsx
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Box, Typography, TextField, InputAdornment, Paper, List, ListItem, ListItemText, CircularProgress, Container } from '@mui/material';
 import { Search as SearchIcon, ArrowForward } from '@mui/icons-material';
 
@@ -7,14 +8,15 @@ export default function SearchPage({
   searchTerm, 
   onSearchChange, 
   isSearching, 
-  searchResults, 
-  onSelectCompany 
+  searchResults
 }) {
   const [localSearch, setLocalSearch] = useState(searchTerm);
 
   useEffect(() => {
     setLocalSearch(searchTerm);
   }, [searchTerm]);
+
+  const navigate = useNavigate();
 
   const handleInputChange = (e) => {
     const newVal = e.target.value;
@@ -87,7 +89,7 @@ export default function SearchPage({
                   <ListItem 
                     button 
                     key={name} 
-                    onClick={() => onSelectCompany(name)} 
+                    onClick={() => navigate(`/fund/${encodeURIComponent(name)}`)} 
                     sx={{ 
                       borderBottom: '1px solid #18181b', 
                       '&:hover': { backgroundColor: '#18181b' }, 

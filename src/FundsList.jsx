@@ -1,5 +1,6 @@
 // FundsList.jsx
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import { formatCurrency, formatPercent } from './utils';
 import { 
@@ -8,10 +9,11 @@ import {
 } from '@mui/material';
 import theme from './theme';
 
-export default function FundsList({ onSelectCompany }) {
+export default function FundsList() {
   const [fundsData, setFundsData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sortConfig, setSortConfig] = useState({ key: 'latestAUM', direction: 'desc' });
+  const navigate = useNavigate();
 
   useEffect(() => {
     const fetchAllData = async () => {
@@ -199,7 +201,7 @@ export default function FundsList({ onSelectCompany }) {
                   <TableRow 
                     key={row.name} 
                     hover 
-                    onClick={() => onSelectCompany(row.name)}
+                    onClick={() => navigate(`/fund/${encodeURIComponent(row.name)}`)} // USE NAVIGATE
                     sx={{ cursor: 'pointer', '&:hover': { backgroundColor: '#18181b !important' } }}
                   >
                     <TableCell sx={{ color: 'white', fontWeight: 600, borderBottom: '1px solid #18181b' }}>
