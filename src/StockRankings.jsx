@@ -7,10 +7,11 @@ import {
   Box, Typography, Paper, TextField, InputAdornment, Table, 
   TableBody, TableCell, TableContainer, TableHead, TableRow, 
   CircularProgress, Container, Fade, Grid, Chip, List, ListItem, 
-  ListItemButton, ListItemText, ClickAwayListener, Link, Breadcrumbs
+  ListItemButton, ListItemText, ClickAwayListener, Link, Breadcrumbs, Divider, Stack
 } from '@mui/material';
 import { 
-  Search, Business, TrendingUp, TrendingDown, WarningAmber, ArrowForward
+  Search, Business, TrendingUp, TrendingDown, WarningAmber, 
+  InfoOutlined, AttachMoney, ShowChart, PieChart, Tag, Language, AccessTime
 } from '@mui/icons-material';
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, 
@@ -43,9 +44,62 @@ const fetchStockPriceHistory = async (symbol) => {
         value: parseFloat(timeSeries[dateStr]['4. close'])
       })); 
   } catch (err) {
+    console.error('[API] Price History Exception:', err);
     return []; 
   }
 };
+
+// --- Helper: Fetch Company Overview ---
+const fetchCompanyOverview = async (symbol) => {
+  const apiKey = import.meta.env.VITE_ALPHA_VANTAGE_API_KEY_2;
+  try {
+    const response = await fetch(
+      `https://www.alphavantage.co/query?function=OVERVIEW&symbol=${symbol}&apikey=${apiKey}`
+    );
+    const data = await response.json();
+
+    if (Object.keys(data).length === 0 || data['Note'] || data['Information'] || data['Error Message']) {
+        return null;
+    }
+    return data;
+  } catch (err) {
+    console.error("Overview Fetch Error:", err);
+    return null;
+  }
+};
+
+// --- Helper: Safe Metric Formatting ---
+const formatMetric = (value, type = 'number') => {
+    if (value === undefined || value === null || value === 'None' || value === '0' || value === '-') return '—';
+
+    const num = parseFloat(value);
+    if (isNaN(num)) return '—';
+
+    if (type === 'currency') return formatCurrency(num);
+    if (type === 'percent') return `${(num * 100).toFixed(2)}%`;
+    if (type === 'decimal') return num.toFixed(2);
+    if (type === 'large_currency') {
+         if (num >= 1.0e+12) return `$${(num / 1.0e+12).toFixed(2)}T`;
+         if (num >= 1.0e+9) return `$${(num / 1.0e+9).toFixed(2)}B`;
+         if (num >= 1.0e+6) return `$${(num / 1.0e+6).toFixed(2)}M`;
+         return formatCurrency(num);
+    }
+    
+    return num.toLocaleString();
+};
+
+// --- Component: Sleek Metric Cell ---
+// Visual update: A clean, bordered cell for the "Matrix" look
+const MatrixCell = ({ label, value, highlight = false }) => (
+    <Box sx={{ p: 2, border: '1px solid #27272a', display: 'flex', flexDirection: 'column', height: '100%', bgcolor: '#000' }}>
+        <Typography variant="caption" sx={{ color: '#71717a', textTransform: 'uppercase', letterSpacing: '0.05em', mb: 1, fontSize: '0.7rem' }}>
+            {label}
+        </Typography>
+        <Typography variant="body1" sx={{ color: highlight ? '#fff' : '#e4e4e7', fontFamily: theme.typography.fontFamilyMono, fontWeight: highlight ? 600 : 400 }}>
+            {value}
+        </Typography>
+    </Box>
+);
 
 const SortableHeader = ({ label, sortKey, currentSort, onSort, align = "left" }) => (
   <TableCell 
@@ -80,6 +134,7 @@ export default function StockRankings() {
   const [searchedTicker, setSearchedTicker] = useState('');
   const [holdings, setHoldings] = useState([]);
   const [stockHistory, setStockHistory] = useState([]);
+  const [companyOverview, setCompanyOverview] = useState(null);
   
   const [loading, setLoading] = useState(false);
   const [currentPrice, setCurrentPrice] = useState(null);
@@ -87,7 +142,6 @@ export default function StockRankings() {
 
   const [sortConfig, setSortConfig] = useState({ key: 'shares_count', direction: 'desc' });
 
-  // Handle URL Param Changes
   useEffect(() => {
     if (ticker) {
         setTickerInput(ticker);
@@ -97,10 +151,10 @@ export default function StockRankings() {
         setSearchedTicker('');
         setHoldings([]);
         setStockHistory([]);
+        setCompanyOverview(null);
     }
   }, [ticker]);
 
-  // Autocomplete Logic
   useEffect(() => {
     if (tickerInput.length < 2) {
         setSuggestions([]);
@@ -148,11 +202,10 @@ export default function StockRankings() {
     
     setHoldings([]);
     setStockHistory([]); 
+    setCompanyOverview(null);
     setSortConfig({ key: 'shares_count', direction: 'desc' });
 
     try {
-      const stockPromise = fetchStockPriceHistory(symbolToSearch);
-      
       const holdingsPromise = supabase
         .from('holdings')
         .select(`
@@ -161,7 +214,13 @@ export default function StockRankings() {
         `)
         .eq('symbol', symbolToSearch.toUpperCase());
 
-      const [stockData, holdingsRes] = await Promise.all([stockPromise, holdingsPromise]);
+      // Fetch external data sequentially to avoid rate limits
+      const stockData = await fetchStockPriceHistory(symbolToSearch);
+      
+      await new Promise(r => setTimeout(r, 500)); 
+      
+      const overviewData = await fetchCompanyOverview(symbolToSearch);
+      const holdingsRes = await holdingsPromise;
 
       if (stockData && stockData.length > 0) {
         setStockHistory(stockData);
@@ -169,6 +228,10 @@ export default function StockRankings() {
         const first = stockData[0].value;
         setCurrentPrice(last);
         setPriceChange(((last - first) / first) * 100);
+      }
+
+      if (overviewData) {
+        setCompanyOverview(overviewData);
       }
 
       if (holdingsRes.data) {
@@ -192,7 +255,7 @@ export default function StockRankings() {
         })));
       }
     } catch (err) {
-      console.error("Search Error:", err);
+      console.error("Search Execution Error:", err);
     } finally {
       setLoading(false);
     }
@@ -216,45 +279,24 @@ export default function StockRankings() {
     return sorted;
   }, [holdings, sortConfig]);
 
-  // --- VIEW 1: LANDING / SEARCH PAGE (No Ticker Selected) ---
+  // --- VIEW: LOADING / LANDING ---
   if (!ticker) {
     return (
-        <Container maxWidth="md" sx={{ 
-          minHeight: '80vh', 
-          display: 'flex', 
-          flexDirection: 'column', 
-          justifyContent: 'center', 
-          alignItems: 'center' 
-        }}>
+        <Container maxWidth="md" sx={{ minHeight: '80vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
           <Box sx={{ width: '100%', maxWidth: '600px', textAlign: 'center' }}>
-            <Typography variant="h2" sx={{ color: 'white', mb: 1, fontWeight: 700 }}>
-              Search Stocks
-            </Typography>
-            <Typography variant="body1" sx={{ color: '#a1a1aa', mb: 5 }}>
-              Analyze institutional ownership for any US equity.
-            </Typography>
-    
+            <Typography variant="h2" sx={{ color: 'white', mb: 1, fontWeight: 700 }}>Search Stocks</Typography>
+            <Typography variant="body1" sx={{ color: '#a1a1aa', mb: 5 }}>Analyze institutional ownership for any US equity.</Typography>
             <ClickAwayListener onClickAway={() => setShowSuggestions(false)}>
                 <Box sx={{ position: 'relative', width: '100%' }}>
                   <TextField
-                    fullWidth
-                    autoFocus
-                    placeholder="e.g. TSLA, NVDA, AAPL"
-                    value={tickerInput}
-                    onChange={(e) => setTickerInput(e.target.value)}
+                    fullWidth autoFocus placeholder="e.g. TSLA, NVDA, AAPL"
+                    value={tickerInput} onChange={(e) => setTickerInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleManualSearch()}
                     variant="outlined"
                     InputProps={{
-                      startAdornment: (
-                        <InputAdornment position="start">
-                           <Search sx={{ color: 'text.secondary', fontSize: 24 }} />
-                        </InputAdornment>
-                      ),
+                      startAdornment: (<InputAdornment position="start"><Search sx={{ color: 'text.secondary', fontSize: 24 }} /></InputAdornment>),
                       sx: { 
-                        backgroundColor: '#09090b',
-                        fontSize: '1.25rem',
-                        py: 1,
-                        borderRadius: '8px',
+                        backgroundColor: '#09090b', fontSize: '1.25rem', py: 1, borderRadius: '8px',
                         '& fieldset': { borderColor: '#27272a' },
                         '&:hover fieldset': { borderColor: '#52525b' },
                         '&.Mui-focused fieldset': { borderColor: '#ffffff' },
@@ -262,39 +304,13 @@ export default function StockRankings() {
                       }
                     }}
                   />
-    
                   {showSuggestions && suggestions.length > 0 && (
-                    <Paper sx={{ 
-                      position: 'absolute', 
-                      top: '100%', 
-                      left: 0, 
-                      right: 0, 
-                      zIndex: 1200, 
-                      mt: 1, 
-                      maxHeight: 400, 
-                      overflow: 'auto', 
-                      border: '1px solid #27272a', 
-                      bgcolor: '#09090b',
-                      textAlign: 'left'
-                    }}>
+                    <Paper sx={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1200, mt: 1, maxHeight: 400, overflow: 'auto', border: '1px solid #27272a', bgcolor: '#09090b' }}>
                       <List disablePadding>
                         {suggestions.map((s, i) => (
                           <ListItem key={i} disablePadding>
-                            <ListItemButton
-                                onClick={() => handleSelectSuggestion(s.symbol)} 
-                                sx={{ 
-                                  borderBottom: '1px solid #18181b', 
-                                  '&:hover': { backgroundColor: '#18181b' }, 
-                                  py: 2
-                                }}
-                            >
-                                <ListItemText 
-                                  primary={s.symbol} 
-                                  secondary={s.issuer}
-                                  primaryTypographyProps={{ color: 'white', fontSize: '1rem', fontFamily: theme.typography.fontFamilyMono }} 
-                                  secondaryTypographyProps={{ color: '#71717a' }}
-                                />
-                                <ArrowForward sx={{ fontSize: 16, color: '#52525b' }} />
+                            <ListItemButton onClick={() => handleSelectSuggestion(s.symbol)} sx={{ borderBottom: '1px solid #18181b', py: 2 }}>
+                                <ListItemText primary={s.symbol} secondary={s.issuer} primaryTypographyProps={{ color: 'white', fontFamily: theme.typography.fontFamilyMono }} secondaryTypographyProps={{ color: '#71717a' }} />
                             </ListItemButton>
                           </ListItem>
                         ))}
@@ -308,32 +324,26 @@ export default function StockRankings() {
     );
   }
 
-  // --- VIEW 2: DETAIL DASHBOARD (Ticker Selected) ---
+  // --- VIEW: DASHBOARD ---
   return (
     <Fade in={true} timeout={800}>
       <Container maxWidth="xl" sx={{ pt: 5, pb: 10 }}>
         
-        {/* Breadcrumb Navigation */}
         <Breadcrumbs sx={{ mb: 2, color: '#71717a' }}>
              <Link component={RouterLink} to="/stocks" color="inherit" underline="hover">Stocks</Link>
              <Typography color="white">{searchedTicker}</Typography>
         </Breadcrumbs>
 
-        {/* Header */}
         <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, justifyContent: 'space-between', alignItems: { xs: 'stretch', md: 'center' }, gap: 2, mb: 4 }}>
           <Box>
             <Typography variant="h4" sx={{ color: 'white', fontWeight: 600, mb: 1 }}>Institutional Holdings</Typography>
             <Typography variant="body1" sx={{ color: '#a1a1aa' }}>Analyze fund positioning for {searchedTicker}.</Typography>
           </Box>
-
           <ClickAwayListener onClickAway={() => setShowSuggestions(false)}>
             <Box sx={{ position: 'relative', width: { xs: '100%', md: 300 } }}>
               <TextField 
-                fullWidth
-                size="small"
-                placeholder="Search Ticker..."
-                value={tickerInput}
-                onChange={(e) => setTickerInput(e.target.value)}
+                fullWidth size="small" placeholder="Search Ticker..."
+                value={tickerInput} onChange={(e) => setTickerInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleManualSearch()}
                 InputProps={{
                   startAdornment: <InputAdornment position="start"><Search sx={{ color: '#52525b', fontSize: 20 }} /></InputAdornment>,
@@ -346,10 +356,7 @@ export default function StockRankings() {
                     {suggestions.map((s, i) => (
                       <ListItem key={i} disablePadding>
                         <ListItemButton onClick={() => handleSelectSuggestion(s.symbol)}>
-                          <ListItemText 
-                            primary={<span style={{ color: 'white', fontFamily: theme.typography.fontFamilyMono }}>{s.symbol}</span>}
-                            secondary={<span style={{ color: '#71717a', fontSize: '0.75rem' }}>{s.issuer}</span>} 
-                          />
+                          <ListItemText primary={<span style={{ color: 'white', fontFamily: theme.typography.fontFamilyMono }}>{s.symbol}</span>} />
                         </ListItemButton>
                       </ListItem>
                     ))}
@@ -361,12 +368,13 @@ export default function StockRankings() {
         </Box>
 
         <Fade in={true}>
-            {/* FIXED: Removed 'item', 'xs', 'md' props. Replaced with 'size' */}
+            {/* UPDATED: Removed spacing/container redundancy, using standard Grid structure */}
             <Grid container spacing={3}>
               
               {/* Row 1: Price Chart */}
+              {/* UPDATED: Replaced 'item xs={12}' with 'size={{ xs: 12 }}' */}
               <Grid size={{ xs: 12 }}>
-                <Paper sx={{ p: 3 }}>
+                <Paper sx={{ p: 3, bgcolor: '#000', border: '1px solid #27272a' }}>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
                     <Box>
                       <Typography variant="h2" sx={{ fontFamily: theme.typography.fontFamilyMono }}>{searchedTicker}</Typography>
@@ -386,8 +394,8 @@ export default function StockRankings() {
                         )}
                     </Box>
                   </Box>
-
-                  <Box sx={{ height: 400, width: '100%', minWidth: 0, position: 'relative' }}>
+                  {/* FIX: Explicit height and width on parent Box for Recharts */}
+                  <Box sx={{ width: '100%', height: 400 }}>
                     {stockHistory.length > 0 ? (
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={stockHistory}>
@@ -400,18 +408,14 @@ export default function StockRankings() {
                               <CartesianGrid stroke="#27272a" vertical={false} />
                               <XAxis dataKey="date" hide />
                               <YAxis domain={['auto', 'auto']} hide />
-                              <RechartsTooltip 
-                                  contentStyle={{ backgroundColor: '#09090b', border: '1px solid #27272a' }}
-                                  itemStyle={{ color: '#fff' }}
-                                  formatter={(val) => [formatCurrency(val), "Price"]}
-                              />
+                              <RechartsTooltip contentStyle={{ backgroundColor: '#09090b', border: '1px solid #27272a' }} itemStyle={{ color: '#fff' }} formatter={(val) => [formatCurrency(val), "Price"]} />
                               <Area type="monotone" dataKey="value" stroke="#ffffff" fill="url(#colorValue)" strokeWidth={2} />
                           </AreaChart>
                         </ResponsiveContainer>
                     ) : (
                         <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', border: '1px dashed #27272a' }}>
                             <WarningAmber sx={{ color: '#52525b', mb: 1 }} />
-                            <Typography variant="caption" sx={{ color: '#52525b' }}>Chart Unavailable</Typography>
+                            <Typography variant="caption" sx={{ color: '#52525b' }}>{loading ? 'Loading Chart...' : 'Chart Unavailable'}</Typography>
                         </Box>
                     )}
                   </Box>
@@ -420,21 +424,20 @@ export default function StockRankings() {
 
               {/* Row 2: Holdings Table */}
               <Grid size={{ xs: 12 }}>
-                <Paper>
+                <Paper sx={{ border: '1px solid #27272a', bgcolor: '#000' }}>
                   <Box sx={{ p: 2, borderBottom: '1px solid #27272a', display: 'flex', justifyContent: 'space-between' }}>
                     <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <Business sx={{ color: '#a1a1aa' }} /> Institutional Holders
                     </Typography>
                   </Box>
-                  
-                  <TableContainer sx={{ maxHeight: 800 }}>
+                  <TableContainer sx={{ maxHeight: 600 }}>
                     <Table stickyHeader>
                       <TableHead>
                         <TableRow>
-                            <SortableHeader label="INSTITUTION NAME" sortKey="fundName" currentSort={sortConfig} onSort={handleSort} />
-                            <SortableHeader label="SHARES HELD" sortKey="shares_count" currentSort={sortConfig} onSort={handleSort} align="right" />
-                            <SortableHeader label="MARKET VALUE" sortKey="value_usd" currentSort={sortConfig} onSort={handleSort} align="right" />
-                            <SortableHeader label="LATEST FILING" sortKey="reportDate" currentSort={sortConfig} onSort={handleSort} align="right" />
+                            <SortableHeader label="INSTITUTION" sortKey="fundName" currentSort={sortConfig} onSort={handleSort} />
+                            <SortableHeader label="SHARES" sortKey="shares_count" currentSort={sortConfig} onSort={handleSort} align="right" />
+                            <SortableHeader label="VALUE" sortKey="value_usd" currentSort={sortConfig} onSort={handleSort} align="right" />
+                            <SortableHeader label="FILED" sortKey="reportDate" currentSort={sortConfig} onSort={handleSort} align="right" />
                         </TableRow>
                       </TableHead>
                       <TableBody>
@@ -442,21 +445,9 @@ export default function StockRankings() {
                             <TableRow><TableCell colSpan={4} align="center" sx={{ py: 8 }}><CircularProgress size={24} /></TableCell></TableRow>
                         ) : sortedHoldings.length > 0 ? (
                             sortedHoldings.map((row) => (
-                            <TableRow key={row.id} hover>
+                            <TableRow key={row.id} hover sx={{ '&:hover': { backgroundColor: '#18181b !important' } }}>
                                 <TableCell sx={{ color: '#ffffff', borderBottom: '1px solid #27272a' }}>
-                                    <Link 
-                                        component={RouterLink} 
-                                        to={`/fund/${encodeURIComponent(row.fundName.replace(/ /g, '-'))}`}
-                                        sx={{ 
-                                            color: 'inherit', 
-                                            textDecoration: 'none', 
-                                            borderBottom: '1px dotted #52525b', 
-                                            '&:hover': { color: '#60a5fa', borderColor: '#60a5fa' },
-                                            cursor: 'pointer'
-                                        }}
-                                    >
-                                        {row.fundName}
-                                    </Link>
+                                    <Link component={RouterLink} to={`/fund/${encodeURIComponent(row.fundName.replace(/ /g, '-'))}`} sx={{ color: 'inherit', textDecoration: 'none', borderBottom: '1px dotted #52525b', '&:hover': { color: '#60a5fa' } }}>{row.fundName}</Link>
                                 </TableCell>
                                 <TableCell align="right" sx={{ color: '#a1a1aa', fontFamily: theme.typography.fontFamilyMono, borderBottom: '1px solid #27272a' }}>{formatNumber(row.shares_count)}</TableCell>
                                 <TableCell align="right" sx={{ color: '#ffffff', fontFamily: theme.typography.fontFamilyMono, borderBottom: '1px solid #27272a' }}>{formatCurrency(row.value_usd)}</TableCell>
@@ -471,6 +462,91 @@ export default function StockRankings() {
                   </TableContainer>
                 </Paper>
               </Grid>
+
+              {/* Row 3: Enhanced Company Overview (Design Overhaul) */}
+              <Grid size={{ xs: 12 }}>
+                <Paper sx={{ p: 0, overflow: 'hidden', border: '1px solid #27272a', bgcolor: '#000' }}>
+                    
+                    {/* Header Strip */}
+                    <Box sx={{ p: 2, borderBottom: '1px solid #27272a', display: 'flex', alignItems: 'center', justifyContent: 'space-between', bgcolor: '#09090b' }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                             <InfoOutlined sx={{ color: '#a1a1aa' }} />
+                             <Typography variant="h6" sx={{ color: 'white' }}>Company Data</Typography>
+                        </Box>
+                        {companyOverview && (
+                            <Box sx={{ display: 'flex', gap: 1 }}>
+                                <Chip icon={<Tag style={{fontSize: 14}} />} label={companyOverview.Sector} size="small" sx={{ bgcolor: '#000', color: '#a1a1aa', border: '1px solid #27272a' }} />
+                                <Chip icon={<Language style={{fontSize: 14}} />} label={companyOverview.Industry} size="small" sx={{ bgcolor: '#000', color: '#a1a1aa', border: '1px solid #27272a' }} />
+                            </Box>
+                        )}
+                    </Box>
+                    
+                    {loading ? (
+                        <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}><CircularProgress size={24} /></Box>
+                    ) : companyOverview ? (
+                        <Box>
+                             {/* Section 1: Description */}
+                             <Box sx={{ p: 3, borderBottom: '1px solid #27272a' }}>
+                                <Typography variant="body2" sx={{ color: '#a1a1aa', lineHeight: 1.8, maxWidth: '90%' }}>
+                                    {companyOverview.Description}
+                                </Typography>
+                             </Box>
+
+                             {/* Section 2: Data Matrix */}
+                             {/* Using Grid v2 syntax 'size' */}
+                             <Grid container>
+                                
+                                {/* Valuation Column */}
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="Market Cap" value={formatMetric(companyOverview.MarketCapitalization, 'large_currency')} highlight />
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="EBITDA" value={formatMetric(companyOverview.EBITDA, 'large_currency')} />
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="P/E Ratio" value={formatMetric(companyOverview.PERatio, 'decimal')} />
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="Price / Book" value={formatMetric(companyOverview.PriceToBookRatio, 'decimal')} />
+                                </Grid>
+
+                                {/* Financials Column */}
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="Revenue (TTM)" value={formatMetric(companyOverview.RevenueTTM, 'large_currency')} highlight />
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="EPS (Diluted)" value={formatMetric(companyOverview.DilutedEPSTTM, 'currency')} />
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="Profit Margin" value={formatMetric(companyOverview.ProfitMargin, 'percent')} />
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="Rev Growth" value={formatMetric(companyOverview.QuarterlyRevenueGrowthYOY, 'percent')} />
+                                </Grid>
+
+                                {/* Market Data Column */}
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="52W High" value={formatMetric(companyOverview['52WeekHigh'], 'currency')} />
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="52W Low" value={formatMetric(companyOverview['52WeekLow'], 'currency')} />
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="Analyst Target" value={formatMetric(companyOverview.AnalystTargetPrice, 'currency')} />
+                                </Grid>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                                    <MatrixCell label="Beta" value={formatMetric(companyOverview.Beta, 'decimal')} />
+                                </Grid>
+                             </Grid>
+                        </Box>
+                    ) : (
+                        <Box sx={{ py: 6, textAlign: 'center' }}>
+                            <Typography variant="body2" sx={{ color: '#52525b' }}>Company overview data currently unavailable.</Typography>
+                        </Box>
+                    )}
+                </Paper>
+              </Grid>
+
             </Grid>
         </Fade>
       </Container>
