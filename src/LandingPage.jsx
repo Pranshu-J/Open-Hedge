@@ -1,5 +1,6 @@
 // LandingPage.jsx
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Box, Typography, Button, Container, Grid, Paper } from '@mui/material';
 import { ArrowForward, ShowChart, Security, Speed, Storage, PieChart, Update } from '@mui/icons-material';
 
@@ -84,7 +85,12 @@ const FundTicker = () => {
   );
 }
 
-export default function LandingPage({ onGetStarted }) {
+export default function LandingPage() {
+  const navigate = useNavigate();
+
+  const handleGetStarted = () => {
+    navigate('/funds');
+  };
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: '#000', overflow: 'hidden' }}>
       
@@ -118,7 +124,7 @@ export default function LandingPage({ onGetStarted }) {
           </Typography>
 
           <Button
-            onClick={onGetStarted}
+            onClick={handleGetStarted}
             endIcon={<ArrowForward />}
             disableRipple
             sx={{

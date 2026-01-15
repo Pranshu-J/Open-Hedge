@@ -1,5 +1,5 @@
 // Dashboard.jsx
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, Link as RouterLink } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import { formatCurrency, formatNumber, formatPercent } from './utils';
@@ -14,8 +14,7 @@ import {
 } from 'recharts';
 import theme from './theme';
 
-// Constants
-const ITEMS_PER_PAGE = 50;
+const BATCH_SIZE = 50;
 
 const formatLargeCurrency = (value) => {
   if (value >= 1e12) return `$${(value / 1e12).toFixed(2)}T`;
@@ -33,33 +32,24 @@ export default function Dashboard() {
   const [selectedFundId, setSelectedFundId] = useState(null);
   const [loadingHistory, setLoadingHistory] = useState(true);
 
-  // Holdings Data State
+  // Holdings / Data State
   const [holdings, setHoldings] = useState([]);
   const [valuations, setValuations] = useState([]);
   const [prevHoldingsMap, setPrevHoldingsMap] = useState({}); 
   const [hasPrevFund, setHasPrevFund] = useState(false);
-  const [totalFundValue, setTotalFundValue] = useState(0); // Needed for weight calc
+  const [totalFundValue, setTotalFundValue] = useState(0); 
 
   // Pagination & Sorting State
   const [loadingHoldings, setLoadingHoldings] = useState(false);
-  const [page, setPage] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [page, setPage] = useState(0);
   const [sortConfig, setSortConfig] = useState({ key: 'value_usd', direction: 'desc' });
-
-  // Infinite Scroll Observer
+  
+  // Observer for Infinite Scroll
   const observer = useRef();
-  const lastHoldingElementRef = useCallback(node => {
-    if (loadingHoldings) return;
-    if (observer.current) observer.current.disconnect();
-    observer.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && hasMore) {
-        setPage(prevPage => prevPage + 1);
-      }
-    });
-    if (node) observer.current.observe(node);
-  }, [loadingHoldings, hasMore]);
-
-  // 1. Fetch Fund History based on URL param
+  
+  // 1. Fetch Fund History
   useEffect(() => {
     const fetchHistory = async () => {
       setLoadingHistory(true);
@@ -81,16 +71,15 @@ export default function Dashboard() {
     }
   }, [decodedCompany]);
 
-  // 2. Fetch "Context" (Valuations, Totals, Previous Fund Map)
-  // This runs once when the selected fund changes to prepare the environment.
+  // 2. Initialize Fund Data (Valuations, Previous Holdings, Reset Pagination)
   useEffect(() => {
     if (!selectedFundId) return;
     
-    const fetchContext = async () => {
-      setHoldings([]); // Clear current list
-      setPage(0);      // Reset page
-      setHasMore(true);
+    const initFundData = async () => {
       setLoadingHoldings(true);
+      setHoldings([]); 
+      setPage(0);
+      setHasMore(true);
 
       const sortedHistory = [...fundHistory].sort((a, b) => 
         new Date(b.report_date) - new Date(a.report_date)
@@ -100,39 +89,35 @@ export default function Dashboard() {
 
       setHasPrevFund(!!prevFund);
 
-      // A. Fetch Valuations
       const valuationsReq = supabase
         .from('fund_valuations')
         .select('valuation_date, value_usd')
         .eq('fund_id', selectedFundId)
         .order('valuation_date', { ascending: true });
 
-      // B. Fetch Previous Fund (Optimized: only symbols & shares)
+      // FIX: Added .limit(10000) to ensure we get ALL previous holdings, not just the default 1000.
+      // Also restored sort order so if we do hit a limit, we keep the most important stocks.
       const prevHoldingsReq = prevFund 
         ? supabase
             .from('holdings')
-            .select('symbol, shares_count') // Fetch only what's needed for the map
+            .select('symbol, shares_count') 
             .eq('fund_id', prevFund.id)
+            .order('value_usd', { ascending: false }) 
+            .limit(10000) 
         : Promise.resolve({ data: null });
 
-      // C. Get Total Value for this fund (for weight calc)
-      // We can sum the current holdings or use a metadata field if available.
-      // Here we assume we sum it, but to avoid fetching all, we use a DB aggregate if possible, 
-      // or fallback to the most recent valuation point.
-      const totalValueReq = supabase
-        .from('holdings') // Quick hack: usually funds table has total_value, using sum here might be slow if not optimized, but better than fetching all rows.
-        .select('value_usd')
-        .eq('fund_id', selectedFundId);
-        
-      const [valuationsRes, prevRes, totalRes] = await Promise.all([valuationsReq, prevHoldingsReq, totalValueReq]);
+      const [valuationsRes, prevRes] = await Promise.all([valuationsReq, prevHoldingsReq]);
 
-      if (!valuationsRes.error) {
+      if (!valuationsRes.error && valuationsRes.data.length > 0) {
         const formattedVals = valuationsRes.data.map(v => ({
           ...v,
           dateStr: new Date(v.valuation_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
           value_usd: Number(v.value_usd)
         }));
         setValuations(formattedVals);
+        setTotalFundValue(formattedVals[formattedVals.length - 1].value_usd);
+      } else {
+         setTotalFundValue(0); 
       }
 
       if (prevRes.data) {
@@ -143,97 +128,130 @@ export default function Dashboard() {
         setPrevHoldingsMap({});
       }
 
-      if (totalRes.data) {
-          const sum = totalRes.data.reduce((acc, curr) => acc + (curr.value_usd || 0), 0);
-          setTotalFundValue(sum);
-      }
-      
-      // Trigger the first batch fetch
-      setLoadingHoldings(false);
+      // Initial Fetch of Holdings (Batch 0)
+      await fetchHoldingsBatch(0, sortConfig.key, sortConfig.direction, true);
     };
 
-    fetchContext();
-  }, [selectedFundId, fundHistory]);
+    initFundData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFundId]);
 
-
-  // 3. Fetch Holdings Batch (Triggered by page or sort changes)
-  useEffect(() => {
+  // 3. Fetch Holdings Batch Function
+  const fetchHoldingsBatch = async (pageIndex, sortKey, sortDir, isReset = false) => {
     if (!selectedFundId) return;
     
-    const fetchBatch = async () => {
-      setLoadingHoldings(true);
+    const isClientSideSort = sortKey === 'change';
+    
+    const currentLimit = isClientSideSort ? 10000 : BATCH_SIZE; 
+    const rangeStart = pageIndex * BATCH_SIZE;
+    const rangeEnd = rangeStart + BATCH_SIZE - 1;
 
-      // Map "weight" to "value_usd" for DB sorting
-      let sortColumn = sortConfig.key;
-      if (sortColumn === 'weight') sortColumn = 'value_usd';
-      // If user tries to sort by "change", we default to value_usd because we can't easily sort by diff server-side
-      if (sortColumn === 'change') sortColumn = 'value_usd'; 
+    let dbSortKey = sortKey;
+    if (sortKey === 'weight') dbSortKey = 'value_usd';
+    if (sortKey === 'change') dbSortKey = 'value_usd'; 
 
-      const from = page * ITEMS_PER_PAGE;
-      const to = from + ITEMS_PER_PAGE - 1;
+    let query = supabase
+      .from('holdings')
+      .select('*')
+      .eq('fund_id', selectedFundId);
 
-      const { data, error } = await supabase
-        .from('holdings')
-        .select('*')
-        .eq('fund_id', selectedFundId)
-        .order(sortColumn, { ascending: sortConfig.direction === 'asc' })
-        .range(from, to);
+    if (dbSortKey && sortDir) {
+      query = query.order(dbSortKey, { ascending: sortDir === 'asc' });
+    }
 
-      if (!error && data) {
-        setHoldings(prev => {
-            // If page 0, replace. If page > 0, append.
-            return page === 0 ? data : [...prev, ...data];
-        });
-        
-        // If we got fewer items than requested, we reached the end
-        if (data.length < ITEMS_PER_PAGE) {
-            setHasMore(false);
-        }
+    if (!isClientSideSort) {
+      query = query.range(rangeStart, rangeEnd);
+    }
+
+    const { data, error } = await query;
+
+    if (!error && data) {
+      setHoldings(prev => {
+        if (isReset) return data;
+        return [...prev, ...data];
+      });
+      
+      if (isReset) setLoadingHoldings(false);
+      else setLoadingMore(false);
+
+      if (data.length < BATCH_SIZE || isClientSideSort) {
+        setHasMore(false);
+      } else {
+        setHasMore(true);
       }
-      setLoadingHoldings(false);
-    };
+    } else {
+      if (isReset) setLoadingHoldings(false);
+    }
+  };
 
-    fetchBatch();
-  }, [selectedFundId, page, sortConfig]);
+  // 4. Infinite Scroll Trigger
+  const lastHoldingElementRef = useCallback(node => {
+    if (loadingHoldings || loadingMore) return;
+    if (observer.current) observer.current.disconnect();
+    
+    observer.current = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting && hasMore) {
+        setLoadingMore(true);
+        const nextPage = page + 1;
+        setPage(nextPage);
+        fetchHoldingsBatch(nextPage, sortConfig.key, sortConfig.direction, false);
+      }
+    });
+    
+    if (node) observer.current.observe(node);
+  }, [loadingHoldings, loadingMore, hasMore, page, sortConfig, selectedFundId]);
 
-  // Handle Sort
+  // 5. Handle Sort Click
   const handleSort = (key) => {
-    // "Change" is calculated client-side based on previous fund. 
-    // Server-side sorting for this is complex. We disable it or reset to default for now.
-    if (key === 'change') return; 
-
-    let direction = 'desc'; // Default to high-to-low
+    let direction = 'desc';
     if (sortConfig.key === key && sortConfig.direction === 'desc') direction = 'asc';
     
     setSortConfig({ key, direction });
-    setPage(0); // Reset to first page
-    setHasMore(true);
-    setHoldings([]); // Clear visuals immediately
+    setPage(0);
+    setLoadingHoldings(true);
+    fetchHoldingsBatch(0, key, direction, true);
   };
+
+  // 6. Client-Side Processing (For Change Sort & Rendering)
+  const sortedHoldings = useMemo(() => {
+    if (sortConfig.key === 'change') {
+      let items = [...holdings];
+      items.sort((a, b) => {
+        const prevA = prevHoldingsMap[a.symbol] || 0;
+        const prevB = prevHoldingsMap[b.symbol] || 0;
+        const changeA = a.shares_count - prevA;
+        const changeB = b.shares_count - prevB;
+        
+        if (changeA < changeB) return sortConfig.direction === 'asc' ? -1 : 1;
+        if (changeA > changeB) return sortConfig.direction === 'asc' ? 1 : -1;
+        return 0;
+      });
+      return items;
+    }
+    return holdings;
+  }, [holdings, sortConfig, prevHoldingsMap]);
 
   const SortableHeader = ({ label, sortKey, align = "left" }) => (
     <TableCell 
       align={align} 
       sx={{ 
-        backgroundColor: '#000', cursor: sortKey === 'change' ? 'default' : 'pointer', userSelect: 'none', '&:hover': { backgroundColor: '#18181b' } 
+        backgroundColor: '#000', cursor: 'pointer', userSelect: 'none', '&:hover': { backgroundColor: '#18181b' } 
       }}
       onClick={() => handleSort(sortKey)}
     >
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: align === 'center' || align === 'right' ? 'flex-end' : 'flex-start', gap: 0.5 }}>
         {align === 'center' && <span style={{flex: 1}}></span>}
         {label}
-        {sortKey !== 'change' && (
-            <Box component="span" sx={{ fontSize: '0.65rem', color: '#52525b', display: 'flex', flexDirection: 'column', lineHeight: 0.8 }}>
-                <span style={{ color: sortConfig.key === sortKey && sortConfig.direction === 'asc' ? '#fff' : '#52525b' }}>▲</span>
-                <span style={{ color: sortConfig.key === sortKey && sortConfig.direction === 'desc' ? '#fff' : '#52525b' }}>▼</span>
-            </Box>
-        )}
+        <Box component="span" sx={{ fontSize: '0.65rem', color: '#52525b', display: 'flex', flexDirection: 'column', lineHeight: 0.8 }}>
+             <span style={{ color: sortConfig.key === sortKey && sortConfig.direction === 'asc' ? '#fff' : '#52525b' }}>▲</span>
+             <span style={{ color: sortConfig.key === sortKey && sortConfig.direction === 'desc' ? '#fff' : '#52525b' }}>▼</span>
+        </Box>
         {align === 'center' && <span style={{flex: 1}}></span>}
       </Box>
     </TableCell>
   );
 
-  const CustomTooltip = ({ active, payload, label }) => {
+  const CustomTooltip = ({ active, payload }) => {
     if (active && payload && payload.length) {
       return (
         <Box sx={{ bgcolor: '#09090b', border: '1px solid #27272a', p: 1.5 }}>
@@ -259,19 +277,16 @@ export default function Dashboard() {
     <Fade in={true} timeout={500}>
       <Container maxWidth="lg" sx={{ mt: 5, pb: 10 }}>
         
-        {/* Breadcrumb Navigation */}
         <Breadcrumbs sx={{ mb: 2, color: '#71717a' }}>
              <Link component={RouterLink} to="/funds" color="inherit" underline="hover">Funds</Link>
              <Typography color="white">{decodedCompany}</Typography>
         </Breadcrumbs>
 
-        {/* Header Info */}
         <Box sx={{ mb: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'end' }}>
           <Typography variant="h4" sx={{ fontWeight: 500, color: 'white' }}>{decodedCompany}</Typography>
           <Link href={currentFundData.source_url} target="_blank" underline="hover" sx={{ color: 'text.secondary', fontSize: '0.875rem' }}>Source Filing ↗</Link>
         </Box>
 
-        {/* Stats Grid */}
         <Grid container spacing={0} sx={{ mb: 4, border: '1px solid #27272a' }}>
           <Grid item xs={12} md={4} sx={{ borderRight: { md: '1px solid #27272a' }, borderBottom: { xs: '1px solid #27272a', md: 'none' }, p: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
             <Typography variant="overline" color="text.secondary" sx={{ mb: 1 }}>Report Period</Typography>
@@ -290,6 +305,7 @@ export default function Dashboard() {
               </Select>
             </Box>
           </Grid>
+          
            <Grid item xs={12} md={4} sx={{ borderRight: { md: '1px solid #27272a' }, borderBottom: { xs: '1px solid #27272a', md: 'none' }, p: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
             <Typography variant="overline" color="text.secondary" sx={{ mb: 1 }}>Quarterly Return</Typography>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -303,12 +319,11 @@ export default function Dashboard() {
           <Grid item xs={12} md={4} sx={{ p: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
             <Typography variant="overline" color="text.secondary" sx={{ mb: 1 }}>Holdings Count</Typography>
             <Typography variant="h5" sx={{ fontFamily: theme.typography.fontFamilyMono, color: 'white' }}>
-              {currentFundData.holdings_count}
+              {currentFundData.holdings_count || "..."}
             </Typography>
           </Grid>
         </Grid>
 
-        {/* Chart Section */}
         {valuations.length > 0 && (
           <Box sx={{ mb: 6, p: 3, border: '1px solid #27272a', background: 'linear-gradient(180deg, #09090b 0%, #000 100%)' }}>
                <Box sx={{ height: 300 }}>
@@ -331,9 +346,8 @@ export default function Dashboard() {
           </Box>
         )}
 
-        {/* Table */}
         <Paper sx={{ width: '100%', overflow: 'hidden' }}>
-          <TableContainer sx={{ maxHeight: 600 }}>
+          <TableContainer sx={{ maxHeight: 800 }}>
             <Table stickyHeader size="small">
               <TableHead>
                 <TableRow>
@@ -346,7 +360,10 @@ export default function Dashboard() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {holdings.map((holding, index) => {
+                {loadingHoldings ? (
+                  <TableRow><TableCell colSpan={6} align="center" sx={{ py: 8 }}><CircularProgress size={24} color="inherit" /></TableCell></TableRow>
+                ) : (
+                  sortedHoldings.map((holding, index) => {
                     const weight = totalFundValue > 0 ? (holding.value_usd / totalFundValue) * 100 : 0;
                     const prevShares = prevHoldingsMap[holding.symbol];
                     let changeContent = "-"; let changeColor = "#71717a";
@@ -364,14 +381,13 @@ export default function Dashboard() {
                         }
                     }
 
-                    // Attach ref to the last element
-                    const isLastElement = index === holdings.length - 1;
-                    
+                    const isLast = index === sortedHoldings.length - 1;
+
                     return (
                       <TableRow 
                         key={`${holding.id}-${index}`} 
+                        ref={isLast ? lastHoldingElementRef : null}
                         hover 
-                        ref={isLastElement ? lastHoldingElementRef : null}
                         sx={{ '&:hover': { backgroundColor: '#18181b !important' } }}
                       >
                         <TableCell sx={{ color: 'white', fontWeight: 600 }}>
@@ -386,12 +402,13 @@ export default function Dashboard() {
                         <TableCell align="center" sx={{ color: '#71717a' }}>{formatPercent(weight)}</TableCell>
                       </TableRow>
                     );
-                })}
-                {loadingHoldings && (
+                  })
+                )}
+                {loadingMore && (
                   <TableRow>
-                     <TableCell colSpan={6} align="center" sx={{ py: 2 }}>
-                        <CircularProgress size={20} color="inherit" />
-                     </TableCell>
+                    <TableCell colSpan={6} align="center" sx={{ py: 2 }}>
+                       <CircularProgress size={20} color="inherit" />
+                    </TableCell>
                   </TableRow>
                 )}
               </TableBody>

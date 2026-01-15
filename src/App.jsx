@@ -4,11 +4,12 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'r
 import { ThemeProvider, CssBaseline, Box } from '@mui/material';
 import theme from './theme';
 import Navbar from './Navbar';
-import LandingPage from './LandingPage';
+import LandingPage from './landingPage';
 import Dashboard from './Dashboard';
 import SearchPage from './SearchPage';
 import FundsList from './FundsList';
 import StockRankings from './StockRankings';
+import TrendingPage from './TrendingPage';
 
 // Wrapper to make Navbar aware of current route for conditional rendering
 const AppContent = () => {
@@ -25,6 +26,7 @@ const AppContent = () => {
           <Route path="/" element={<LandingPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/funds" element={<FundsList />} />
+          <Route path="/trending" element={<TrendingPage />} />
           
           {/* Dynamic Routes for URL Navigation */}
           <Route path="/fund/:companyName" element={<Dashboard />} />

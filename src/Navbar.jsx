@@ -1,104 +1,155 @@
-// Navbar.jsx
-import React, { useState, useEffect } from 'react';
-import { useNavigate, Link as RouterLink } from 'react-router-dom'; // Import Router hooks
+import React, { useState } from 'react';
+import { useLocation, Link as RouterLink } from 'react-router-dom';
 import { 
-  Box, Typography, TextField, InputAdornment, Paper, List, 
-  ListItem, ListItemText, CircularProgress, ButtonBase 
+  AppBar, Box, Toolbar, IconButton, Typography, Container, 
+  Button, Drawer, List, ListItem, ListItemButton, ListItemText, 
+  ListItemIcon, useMediaQuery, useTheme 
 } from '@mui/material';
-import { Search as SearchIcon, ArrowForward, Public } from '@mui/icons-material';
+import { 
+  Menu as MenuIcon, 
+  Close as CloseIcon, 
+  ShowChart, 
+  Business, 
+  Search, 
+  TrendingUp 
+} from '@mui/icons-material';
+
+const NAV_ITEMS = [
+  { label: 'Funds', path: '/funds', icon: <Business /> },
+  { label: 'Stocks', path: '/stocks', icon: <ShowChart /> },
+  { label: 'Trending', path: '/trending', icon: <TrendingUp /> },
+  { label: 'Search', path: '/search', icon: <Search /> },
+];
 
 export default function Navbar() {
-  const navigate = useNavigate();
-  const [localSearch, setLocalSearch] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchResults, setSearchResults] = useState([]);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const location = useLocation();
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
-  // Fetch Logic (internal to navbar now)
-  useEffect(() => {
-    if (localSearch.length < 2) {
-      setSearchResults([]);
-      setIsSearching(false);
-      return;
-    }
-
-    const timer = setTimeout(async () => {
-      setIsSearching(true);
-      // NOTE: We need supabase imported here or passed as context. 
-      // For simplicity, assuming supabase is available or passed via props. 
-      // If props are removed from App.jsx, import supabase directly here:
-      const { supabase } = await import('./supabaseClient'); 
-      
-      const { data, error } = await supabase
-        .from('funds')
-        .select('company_name')
-        .ilike('company_name', `%${localSearch}%`)
-        .limit(5);
-
-      if (!error && data) {
-        const uniqueNames = [...new Set(data.map(item => item.company_name))];
-        setSearchResults(uniqueNames);
-      }
-      setIsSearching(false);
-    }, 500);
-
-    return () => clearTimeout(timer);
-  }, [localSearch]);
-
-  const handleSelect = (name) => {
-    setLocalSearch('');
-    setSearchResults([]);
-    navigate(`/fund/${encodeURIComponent(name)}`);
+  const handleDrawerToggle = () => {
+    setMobileOpen(!mobileOpen);
   };
 
-  return (
-    <Box sx={{ borderBottom: '1px solid #27272a', py: 1.5, px: 3, position: 'sticky', top: 0, zIndex: 1100, bgcolor: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(12px)' }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', maxWidth: '1200px', mx: 'auto' }}>
-        
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          {/* LOGO */}
-          <ButtonBase component={RouterLink} to="/" disableRipple sx={{ borderRadius: 2, p: 0.5 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Public sx={{ color: 'white', fontSize: 24 }} />
-              <Typography variant="h6" sx={{ letterSpacing: '0.05em', color: 'white', fontWeight: 700 }}>
-                OPEN <span style={{ color: '#52525b', fontWeight: 400 }}>HEDGE</span>
-              </Typography>
-            </Box>
-          </ButtonBase>
+  const isActive = (path) => {
+    if (path === '/') return location.pathname === '/';
+    return location.pathname.startsWith(path);
+  };
 
-          {/* NAV LINKS */}
-          <ButtonBase component={RouterLink} to="/funds" sx={{ color: '#a1a1aa', '&:hover': { color: 'white' }, fontSize: '0.875rem', fontWeight: 500, letterSpacing: '0.05em' }}>
-            FUNDS
-          </ButtonBase>
-          <ButtonBase component={RouterLink} to="/stocks" sx={{ color: '#a1a1aa', '&:hover': { color: 'white' }, fontSize: '0.875rem', fontWeight: 500, letterSpacing: '0.05em' }}>
-            STOCKS
-          </ButtonBase>
-        </Box>
-
-        {/* SEARCH */}
-        <Box sx={{ position: 'relative', width: { xs: '200px', md: '300px' } }}>
-            <TextField
-              fullWidth size="small" placeholder="Search Fund..." value={localSearch} 
-              onChange={(e) => setLocalSearch(e.target.value)} 
-              variant="outlined"
-              InputProps={{
-                startAdornment: ( <InputAdornment position="start"> {isSearching ? <CircularProgress size={16} color="inherit" /> : <SearchIcon sx={{ color: 'text.secondary', fontSize: 20 }} />} </InputAdornment> ),
-                sx: { backgroundColor: '#09090b', fontSize: '0.875rem', borderRadius: '6px', '& fieldset': { borderColor: '#27272a' }, '&:hover fieldset': { borderColor: '#52525b' }, '&.Mui-focused fieldset': { borderColor: '#ffffff' } }
-              }}
-            />
-            {searchResults.length > 0 && (
-              <Paper sx={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1200, mt: 1, maxHeight: 400, overflow: 'auto', border: '1px solid #27272a', bgcolor: '#09090b' }}>
-                <List disablePadding>
-                  {searchResults.map((name) => (
-                    <ListItem button key={name} onClick={() => handleSelect(name)} sx={{ borderBottom: '1px solid #18181b', '&:hover': { backgroundColor: '#18181b' }, py: 1 }}>
-                      <ListItemText primary={name} primaryTypographyProps={{ color: 'white', fontSize: '0.875rem' }} />
-                      <ArrowForward sx={{ fontSize: 14, color: '#52525b' }} />
-                    </ListItem>
-                  ))}
-                </List>
-              </Paper>
-            )}
-        </Box>
+  const drawerContent = (
+    <Box sx={{ height: '100%', bgcolor: '#000', color: 'white' }}>
+      <Box sx={{ p: 2, display: 'flex', justifyContent: 'flex-end' }}>
+        <IconButton onClick={handleDrawerToggle} sx={{ color: '#a1a1aa' }}>
+          <CloseIcon />
+        </IconButton>
       </Box>
+      <List>
+        {NAV_ITEMS.map((item) => (
+          <ListItem key={item.label} disablePadding>
+            <ListItemButton 
+              component={RouterLink} 
+              to={item.path}
+              onClick={handleDrawerToggle}
+              sx={{ 
+                borderLeft: isActive(item.path) ? '2px solid #fff' : '2px solid transparent',
+                bgcolor: isActive(item.path) ? '#18181b' : 'transparent'
+              }}
+            >
+              <ListItemIcon sx={{ color: isActive(item.path) ? '#fff' : '#a1a1aa' }}>
+                {item.icon}
+              </ListItemIcon>
+              <ListItemText 
+                primary={item.label} 
+                primaryTypographyProps={{ 
+                  fontWeight: isActive(item.path) ? 600 : 400,
+                  color: isActive(item.path) ? '#fff' : '#a1a1aa'
+                }} 
+              />
+            </ListItemButton>
+          </ListItem>
+        ))}
+      </List>
     </Box>
+  );
+
+  return (
+    <>
+      <AppBar position="sticky" elevation={0} sx={{ bgcolor: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(10px)', borderBottom: '1px solid #27272a' }}>
+        <Container maxWidth="xl">
+          <Toolbar disableGutters sx={{ justifyContent: 'space-between' }}>
+            
+            {/* Logo / Brand - Restored OPEN HEDGE */}
+            <RouterLink to="/" style={{ textDecoration: 'none', display: 'flex', alignItems: 'center' }}>
+              <Typography
+                variant="h6"
+                noWrap
+                sx={{
+                  mr: 2,
+                  fontWeight: 700,
+                  letterSpacing: '.05rem',
+                  color: 'white',
+                  textDecoration: 'none',
+                }}
+              >
+                OPEN<span style={{ color: '#71717a' }}>HEDGE</span>
+              </Typography>
+            </RouterLink>
+
+            {/* Desktop Navigation */}
+            {!isMobile && (
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                {NAV_ITEMS.map((item) => (
+                  <Button
+                    key={item.label}
+                    component={RouterLink}
+                    to={item.path}
+                    startIcon={item.icon}
+                    sx={{
+                      color: isActive(item.path) ? '#fff' : '#a1a1aa',
+                      fontWeight: isActive(item.path) ? 600 : 400,
+                      textTransform: 'none',
+                      px: 2,
+                      '&:hover': {
+                        color: '#fff',
+                        bgcolor: 'rgba(255,255,255,0.05)'
+                      }
+                    }}
+                  >
+                    {item.label}
+                  </Button>
+                ))}
+              </Box>
+            )}
+
+            {/* Mobile Menu Icon */}
+            {isMobile && (
+              <IconButton
+                color="inherit"
+                aria-label="open drawer"
+                edge="start"
+                onClick={handleDrawerToggle}
+                sx={{ color: '#a1a1aa' }}
+              >
+                <MenuIcon />
+              </IconButton>
+            )}
+          </Toolbar>
+        </Container>
+      </AppBar>
+
+      <Drawer
+        anchor="right"
+        variant="temporary"
+        open={mobileOpen}
+        onClose={handleDrawerToggle}
+        ModalProps={{ keepMounted: true }}
+        sx={{
+          display: { xs: 'block', md: 'none' },
+          '& .MuiDrawer-paper': { boxSizing: 'border-box', width: 280, bgcolor: '#000', borderLeft: '1px solid #27272a' },
+        }}
+      >
+        {drawerContent}
+      </Drawer>
+    </>
   );
 }
