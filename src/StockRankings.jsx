@@ -141,6 +141,7 @@ export default function StockRankings() {
   const [priceChange, setPriceChange] = useState(0);
 
   const [sortConfig, setSortConfig] = useState({ key: 'shares_count', direction: 'desc' });
+  const [tableSearchTerm, setTableSearchTerm] = useState('');
 
   useEffect(() => {
     if (ticker) {
@@ -268,21 +269,32 @@ export default function StockRankings() {
   };
 
   const sortedHoldings = useMemo(() => {
-    const sorted = [...holdings];
-    sorted.sort((a, b) => {
+    let data = [...holdings];
+
+    // 1. Filter by Table Search Term
+    if (tableSearchTerm) {
+      const lowerTerm = tableSearchTerm.toLowerCase();
+      data = data.filter(h => 
+        h.fundName.toLowerCase().includes(lowerTerm)
+      );
+    }
+
+    // 2. Sort
+    data.sort((a, b) => {
       let aV = sortConfig.key === 'reportDate' ? a.parsedDate : a[sortConfig.key];
       let bV = sortConfig.key === 'reportDate' ? b.parsedDate : b[sortConfig.key];
       if (aV < bV) return sortConfig.direction === 'asc' ? -1 : 1;
       if (aV > bV) return sortConfig.direction === 'asc' ? 1 : -1;
       return 0;
     });
-    return sorted;
-  }, [holdings, sortConfig]);
+    return data;
+  }, [holdings, sortConfig, tableSearchTerm]);
 
   // --- VIEW: LOADING / LANDING ---
+  // Note: Changed maxWidth from 'md' to 'lg' here as well to be consistent, though 'md' is fine for landing.
   if (!ticker) {
     return (
-        <Container maxWidth="md" sx={{ minHeight: '80vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+        <Container maxWidth="lg" sx={{ minHeight: '80vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
           <Box sx={{ width: '100%', maxWidth: '600px', textAlign: 'center' }}>
             <Typography variant="h2" sx={{ color: 'white', mb: 1, fontWeight: 700 }}>Search Stocks</Typography>
             <Typography variant="body1" sx={{ color: '#a1a1aa', mb: 5 }}>Analyze institutional ownership for any US equity.</Typography>
@@ -325,9 +337,10 @@ export default function StockRankings() {
   }
 
   // --- VIEW: DASHBOARD ---
+  // Note: This is the main change. maxWidth="xl" -> maxWidth="lg" to match Dashboard.jsx
   return (
     <Fade in={true} timeout={800}>
-      <Container maxWidth="xl" sx={{ pt: 5, pb: 10 }}>
+      <Container maxWidth="lg" sx={{ pt: 5, pb: 10 }}>
         
         <Breadcrumbs sx={{ mb: 2, color: '#71717a' }}>
              <Link component={RouterLink} to="/stocks" color="inherit" underline="hover">Stocks</Link>
@@ -425,10 +438,33 @@ export default function StockRankings() {
               {/* Row 2: Holdings Table */}
               <Grid size={{ xs: 12 }}>
                 <Paper sx={{ border: '1px solid #27272a', bgcolor: '#000' }}>
-                  <Box sx={{ p: 2, borderBottom: '1px solid #27272a', display: 'flex', justifyContent: 'space-between' }}>
+                  
+                  {/* Updated Header with Search Input */}
+                  <Box sx={{ p: 2, borderBottom: '1px solid #27272a', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
                     <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <Business sx={{ color: '#a1a1aa' }} /> Institutional Holders
                     </Typography>
+
+                    <TextField
+                      placeholder="Search Fund"
+                      variant="outlined"
+                      size="small"
+                      value={tableSearchTerm}
+                      onChange={(e) => setTableSearchTerm(e.target.value)}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <Search sx={{ color: 'text.secondary', fontSize: 20 }} />
+                          </InputAdornment>
+                        ),
+                        sx: { 
+                          width: 240, 
+                          backgroundColor: '#09090b', 
+                          fontFamily: theme.typography.fontFamilyMono,
+                          fontSize: '0.875rem'
+                        }
+                      }}
+                    />
                   </Box>
                   <TableContainer sx={{ maxHeight: 600 }}>
                     <Table stickyHeader>

@@ -6,9 +6,9 @@ import { formatCurrency, formatNumber, formatPercent } from './utils';
 import { 
   Box, Typography, Paper, Grid, Select, MenuItem, Table, TableBody, 
   TableCell, TableContainer, TableHead, TableRow, Link, CircularProgress, 
-  Fade, Container, Breadcrumbs
+  Fade, Container, Breadcrumbs, TextField, InputAdornment
 } from '@mui/material';
-import { TrendingUp, TrendingDown, CalendarToday } from '@mui/icons-material';
+import { TrendingUp, TrendingDown, CalendarToday, Search as SearchIcon } from '@mui/icons-material';
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer 
 } from 'recharts';
@@ -45,6 +45,7 @@ export default function Dashboard() {
   const [hasMore, setHasMore] = useState(true);
   const [page, setPage] = useState(0);
   const [sortConfig, setSortConfig] = useState({ key: 'value_usd', direction: 'desc' });
+  const [searchTerm, setSearchTerm] = useState('');
   
   // Observer for Infinite Scroll
   const observer = useRef();
@@ -70,6 +71,15 @@ export default function Dashboard() {
         fetchHistory();
     }
   }, [decodedCompany]);
+
+  // Search Handler
+  const handleSearch = (event) => {
+    const term = event.target.value;
+    setSearchTerm(term);
+    setPage(0);
+    setLoadingHoldings(true);
+    fetchHoldingsBatch(0, sortConfig.key, sortConfig.direction, true, term);
+  };
 
   // 2. Initialize Fund Data (Valuations, Previous Holdings, Reset Pagination)
   useEffect(() => {
@@ -137,7 +147,7 @@ export default function Dashboard() {
   }, [selectedFundId]);
 
   // 3. Fetch Holdings Batch Function
-  const fetchHoldingsBatch = async (pageIndex, sortKey, sortDir, isReset = false) => {
+  const fetchHoldingsBatch = async (pageIndex, sortKey, sortDir, isReset = false, search = searchTerm) => {
     if (!selectedFundId) return;
     
     const isClientSideSort = sortKey === 'change';
@@ -154,6 +164,10 @@ export default function Dashboard() {
       .from('holdings')
       .select('*')
       .eq('fund_id', selectedFundId);
+
+    if (search) {
+      query = query.ilike('symbol', `%${search}%`);
+    }
 
     if (dbSortKey && sortDir) {
       query = query.order(dbSortKey, { ascending: sortDir === 'asc' });
@@ -194,12 +208,12 @@ export default function Dashboard() {
         setLoadingMore(true);
         const nextPage = page + 1;
         setPage(nextPage);
-        fetchHoldingsBatch(nextPage, sortConfig.key, sortConfig.direction, false);
+        fetchHoldingsBatch(nextPage, sortConfig.key, sortConfig.direction, false, searchTerm);
       }
     });
     
     if (node) observer.current.observe(node);
-  }, [loadingHoldings, loadingMore, hasMore, page, sortConfig, selectedFundId]);
+  }, [loadingHoldings, loadingMore, hasMore, page, sortConfig, selectedFundId, searchTerm]);
 
   // 5. Handle Sort Click
   const handleSort = (key) => {
@@ -209,7 +223,7 @@ export default function Dashboard() {
     setSortConfig({ key, direction });
     setPage(0);
     setLoadingHoldings(true);
-    fetchHoldingsBatch(0, key, direction, true);
+    fetchHoldingsBatch(0, key, direction, true, searchTerm);
   };
 
   // 6. Client-Side Processing (For Change Sort & Rendering)
@@ -345,6 +359,29 @@ export default function Dashboard() {
                </Box>
           </Box>
         )}
+
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
+          <TextField
+            placeholder="Search Ticker"
+            variant="outlined"
+            size="small"
+            value={searchTerm}
+            onChange={handleSearch}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon sx={{ color: 'text.secondary', fontSize: 20 }} />
+                </InputAdornment>
+              ),
+              sx: { 
+                width: 240, 
+                backgroundColor: '#09090b',
+                fontFamily: theme.typography.fontFamilyMono,
+                fontSize: '0.875rem'
+              }
+            }}
+          />
+        </Box>
 
         <Paper sx={{ width: '100%', overflow: 'hidden' }}>
           <TableContainer sx={{ maxHeight: 800 }}>
