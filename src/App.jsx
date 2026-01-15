@@ -4,7 +4,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'r
 import { ThemeProvider, CssBaseline, Box } from '@mui/material';
 import theme from './theme';
 import Navbar from './Navbar';
-import LandingPage from './landingPage';
+import LandingPage from './LandingPage';
 import Dashboard from './Dashboard';
 import SearchPage from './SearchPage';
 import FundsList from './FundsList';
