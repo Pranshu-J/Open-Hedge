@@ -1,3 +1,4 @@
+// Navbar.jsx
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate, Link as RouterLink } from 'react-router-dom';
 import { supabase } from './supabaseClient';
@@ -5,7 +6,7 @@ import {
   AppBar, Box, Toolbar, IconButton, Typography, Container, 
   Button, Drawer, List, ListItem, ListItemButton, ListItemText, 
   ListItemIcon, useMediaQuery, useTheme, Autocomplete, TextField,
-  InputAdornment, CircularProgress
+  InputAdornment, CircularProgress, Avatar, Menu, MenuItem, Divider
 } from '@mui/material';
 import { 
   Menu as MenuIcon, 
@@ -13,20 +14,28 @@ import {
   ShowChart, 
   Business, 
   TrendingUp, 
-  Search as SearchIcon
+  Search as SearchIcon,
+  Login as LoginIcon,
+  Logout,
+  PieChart // Imported for Portfolio
 } from '@mui/icons-material';
 
+// --- ADDED PORTFOLIO ITEM HERE ---
 const NAV_ITEMS = [
   { label: 'Funds', path: '/funds', icon: <Business /> },
   { label: 'Stocks', path: '/stocks', icon: <ShowChart /> },
   { label: 'Trending', path: '/trending', icon: <TrendingUp /> },
+  { label: 'Portfolio', path: '/portfolio', icon: <PieChart /> }, 
 ];
 
 export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [session, setSession] = useState(null);
   
+  // Profile Menu State
+  const [anchorElUser, setAnchorElUser] = useState(null);
+
   // Search State
-  const [open, setOpen] = useState(false);
   const [options, setOptions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [inputValue, setInputValue] = useState('');
@@ -35,6 +44,67 @@ export default function Navbar() {
   const navigate = useNavigate();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+
+  // --- Auth Logic ---
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) {
+        ensureProfileExists(session.user);
+      }
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (_event === 'SIGNED_IN' && session) {
+        ensureProfileExists(session.user);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const ensureProfileExists = async (user) => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', user.id)
+        .single();
+
+      if (!data || error) {
+        console.log("Old user detected. Creating missing profile...");
+        await supabase.from('profiles').insert([
+          {
+            id: user.id,
+            user_details: {
+              email: user.email,
+              full_name: user.user_metadata?.full_name,
+              auto_created: true
+            }
+          }
+        ]);
+      }
+    } catch (err) {
+      console.error("Error ensuring profile:", err);
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setAnchorElUser(null);
+    navigate('/');
+  };
+
+  const handleOpenUserMenu = (event) => {
+    setAnchorElUser(event.currentTarget);
+  };
+
+  const handleCloseUserMenu = () => {
+    setAnchorElUser(null);
+  };
 
   const handleDrawerToggle = () => {
     setMobileOpen(!mobileOpen);
@@ -54,7 +124,6 @@ export default function Navbar() {
       return;
     }
 
-    // Helper to format "ORACLE CORP" -> "Oracle Corp"
     const toTitleCase = (str) => {
       return str.replace(
         /\w\S*/g,
@@ -66,18 +135,16 @@ export default function Navbar() {
       setLoading(true);
       
       try {
-        // 1. Search Funds
         const fundsPromise = supabase
           .from('funds_ranked')
           .select('company_name')
           .ilike('company_name', `%${inputValue}%`)
           .limit(5);
 
-        // 2. Search Stocks (Check Symbol OR Issuer)
         const stocksPromise = supabase
-          .from('holdings')
-          .select('symbol, issuer') // Changed 'name' to 'issuer'
-          .or(`symbol.ilike.%${inputValue}%,issuer.ilike.%${inputValue}%`) // Search issuer column
+          .from('securities_reference') 
+          .select('symbol, description') 
+          .or(`symbol.ilike.%${inputValue}%,description.ilike.%${inputValue}%`) 
           .limit(20);
 
         const [fundsData, stocksData] = await Promise.all([fundsPromise, stocksPromise]);
@@ -85,7 +152,6 @@ export default function Navbar() {
         if (active) {
           const newOptions = [];
 
-          // Process Funds
           if (fundsData.data) {
             fundsData.data.forEach(fund => {
               newOptions.push({
@@ -97,18 +163,13 @@ export default function Navbar() {
             });
           }
 
-          // Process Stocks
           if (stocksData.data) {
             const seenSymbols = new Set();
             stocksData.data.forEach(stock => {
               if (stock.symbol && !seenSymbols.has(stock.symbol)) {
                 seenSymbols.add(stock.symbol);
-
-                // Format the issuer name
-                const formattedName = stock.issuer ? toTitleCase(stock.issuer) : '';
-
-                // Use `matchLabel` for matching (includes issuer) but keep `label` as the ticker
-                // so the primary text shows only the symbol and the small caption shows the issuer.
+                const formattedName = stock.description ? toTitleCase(stock.description) : '';
+                
                 newOptions.push({
                   type: 'Stocks',
                   label: stock.symbol,
@@ -119,7 +180,6 @@ export default function Navbar() {
               }
             });
           }
-
           setOptions(newOptions);
         }
       } catch (error) {
@@ -141,11 +201,9 @@ export default function Navbar() {
 
   const handleSearchSelect = (event, newValue) => {
     if (!newValue) return;
-    
     if (newValue.type === 'Institutions') {
       navigate(`/fund/${newValue.value}`);
     } else if (newValue.type === 'Stocks') {
-      // newValue.value is just the ticker (e.g., "ORCL")
       navigate(`/stocks/${newValue.value}`);
     }
     setInputValue('');
@@ -197,6 +255,23 @@ export default function Navbar() {
             </ListItemButton>
           </ListItem>
         ))}
+        
+        <Divider sx={{ my: 2, borderColor: '#27272a' }} />
+        {session ? (
+           <ListItem disablePadding>
+             <ListItemButton onClick={() => { handleLogout(); handleDrawerToggle(); }}>
+               <ListItemIcon sx={{ color: '#ef4444' }}><Logout /></ListItemIcon>
+               <ListItemText primary="Sign Out" primaryTypographyProps={{ color: '#ef4444' }} />
+             </ListItemButton>
+           </ListItem>
+        ) : (
+           <ListItem disablePadding>
+             <ListItemButton component={RouterLink} to="/login" onClick={handleDrawerToggle}>
+               <ListItemIcon sx={{ color: '#fff' }}><LoginIcon /></ListItemIcon>
+               <ListItemText primary="Login" />
+             </ListItemButton>
+           </ListItem>
+        )}
       </List>
     </Box>
   );
@@ -208,17 +283,7 @@ export default function Navbar() {
           <Toolbar disableGutters sx={{ justifyContent: 'space-between', gap: 2 }}>
             
             <RouterLink to="/" style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', minWidth: 'fit-content' }}>
-              <Typography
-                variant="h6"
-                noWrap
-                sx={{
-                  mr: 2,
-                  fontWeight: 700,
-                  letterSpacing: '.05rem',
-                  color: 'white',
-                  textDecoration: 'none',
-                }}
-              >
+              <Typography variant="h6" noWrap sx={{ mr: 2, fontWeight: 700, letterSpacing: '.05rem', color: 'white' }}>
                 OPEN<span style={{ color: '#71717a' }}>HEDGE</span>
               </Typography>
             </RouterLink>
@@ -226,20 +291,17 @@ export default function Navbar() {
             <Box sx={{ flexGrow: 1, maxWidth: 600, display: { xs: 'none', md: 'block' } }}>
               <Autocomplete
                 freeSolo
-                id="global-search"
                 disableClearable
                 options={options}
                 groupBy={(option) => option.type}
                 getOptionLabel={(option) => (typeof option === 'string' ? option : option.matchLabel || option.label)}
                 loading={loading}
-                onInputChange={(event, newInputValue) => {
-                  setInputValue(newInputValue);
-                }}
+                onInputChange={(event, newInputValue) => setInputValue(newInputValue)}
                 onChange={handleSearchSelect}
                 renderInput={(params) => (
                   <TextField
                     {...params}
-                    placeholder="Search funds (Bridgewater) or stocks (Oracle)..."
+                    placeholder="Search funds or stocks..."
                     size="small"
                     InputProps={{
                       ...params.InputProps,
@@ -268,31 +330,20 @@ export default function Navbar() {
                 renderOption={(props, option) => (
                     <Box component="li" {...props} key={props.key}>
                         <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-                            <Typography variant="body2" sx={{ fontWeight: 500, color: 'white' }}>
-                                {option.label}
-                            </Typography>
-                            <Typography variant="caption" sx={{ color: '#71717a' }}>
-                                {option.subLabel}
-                            </Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 500, color: 'white' }}>{option.label}</Typography>
+                            <Typography variant="caption" sx={{ color: '#71717a' }}>{option.subLabel}</Typography>
                         </Box>
                     </Box>
                 )}
                 sx={{
-                    '& .MuiAutocomplete-listbox': {
-                        bgcolor: '#09090b',
-                        border: '1px solid #27272a',
-                        color: 'white',
-                    },
-                    '& .MuiAutocomplete-groupLabel': {
-                        bgcolor: '#18181b',
-                        color: '#a1a1aa',
-                    }
+                    '& .MuiAutocomplete-listbox': { bgcolor: '#09090b', border: '1px solid #27272a', color: 'white' },
+                    '& .MuiAutocomplete-groupLabel': { bgcolor: '#18181b', color: '#a1a1aa' }
                 }}
               />
             </Box>
 
             {!isMobile && (
-              <Box sx={{ display: 'flex', gap: 1, minWidth: 'fit-content' }}>
+              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
                 {NAV_ITEMS.map((item) => (
                   <Button
                     key={item.label}
@@ -304,52 +355,59 @@ export default function Navbar() {
                       fontWeight: isActive(item.path) ? 600 : 400,
                       textTransform: 'none',
                       px: 2,
-                      '&:hover': {
-                        color: '#fff',
-                        bgcolor: 'rgba(255,255,255,0.05)'
-                      }
+                      '&:hover': { color: '#fff', bgcolor: 'rgba(255,255,255,0.05)' }
                     }}
                   >
                     {item.label}
                   </Button>
                 ))}
+
+                {session ? (
+                  <>
+                    <IconButton onClick={handleOpenUserMenu} sx={{ ml: 1, p: 0 }}>
+                      <Avatar 
+                        alt={session.user.user_metadata.full_name} 
+                        src={session.user.user_metadata.avatar_url}
+                        sx={{ width: 32, height: 32, border: '1px solid #27272a' }}
+                      />
+                    </IconButton>
+                    <Menu
+                      sx={{ mt: '45px', '& .MuiPaper-root': { bgcolor: '#09090b', border: '1px solid #27272a', color: 'white' } }}
+                      anchorEl={anchorElUser}
+                      anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+                      keepMounted
+                      transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                      open={Boolean(anchorElUser)}
+                      onClose={handleCloseUserMenu}
+                    >
+                      <MenuItem onClick={handleLogout} sx={{ color: '#ef4444' }}>
+                        <ListItemIcon sx={{ color: '#ef4444' }}><Logout fontSize="small" /></ListItemIcon>
+                        Sign Out
+                      </MenuItem>
+                    </Menu>
+                  </>
+                ) : (
+                  <Button component={RouterLink} to="/login" startIcon={<LoginIcon />} variant="outlined" sx={{ ml: 1, color: 'white', borderColor: '#27272a', textTransform: 'none', '&:hover': { borderColor: '#fff' } }}>
+                    Login
+                  </Button>
+                )}
               </Box>
             )}
 
             {isMobile && (
               <Box sx={{ display: 'flex', gap: 1 }}>
-                <IconButton
-                    component={RouterLink} 
-                    to="/search"
-                    sx={{ color: '#a1a1aa' }}
-                >
-                    <SearchIcon />
-                </IconButton>
-                <IconButton
-                    color="inherit"
-                    aria-label="open drawer"
-                    edge="start"
-                    onClick={handleDrawerToggle}
-                    sx={{ color: '#a1a1aa' }}
-                >
-                    <MenuIcon />
-                </IconButton>
+                <IconButton component={RouterLink} to="/search" sx={{ color: '#a1a1aa' }}><SearchIcon /></IconButton>
+                <IconButton color="inherit" onClick={handleDrawerToggle} sx={{ color: '#a1a1aa' }}><MenuIcon /></IconButton>
               </Box>
             )}
           </Toolbar>
         </Container>
       </AppBar>
-
       <Drawer
         anchor="right"
-        variant="temporary"
         open={mobileOpen}
         onClose={handleDrawerToggle}
-        ModalProps={{ keepMounted: true }}
-        sx={{
-          display: { xs: 'block', md: 'none' },
-          '& .MuiDrawer-paper': { boxSizing: 'border-box', width: 280, bgcolor: '#000', borderLeft: '1px solid #27272a' },
-        }}
+        sx={{ display: { xs: 'block', md: 'none' }, '& .MuiDrawer-paper': { boxSizing: 'border-box', width: 280, bgcolor: '#000', borderLeft: '1px solid #27272a' } }}
       >
         {drawerContent}
       </Drawer>

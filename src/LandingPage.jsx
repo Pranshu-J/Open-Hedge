@@ -146,8 +146,8 @@ export default function LandingPage() {
       <Box sx={{ borderBottom: '1px solid #27272a', bgcolor: '#050505', py: 8 }}>
         <Container maxWidth="lg">
           <Grid container spacing={4} justifyContent="center">
-            <Grid item xs={12} md={4}><StatItem value="15k+" label="Funds Tracked" /></Grid>
-            <Grid item xs={12} md={4}><StatItem value="$40T+" label="Assets Analyzed" /></Grid>
+            <Grid item xs={12} md={4}><StatItem value="60+" label="Institutions Analyzed" /></Grid>
+            <Grid item xs={12} md={4}><StatItem value="8,600+" label="Assets Tracked" /></Grid>
             <Grid item xs={12} md={4}><StatItem value="Quarterly" label="Data Updates" /></Grid>
           </Grid>
         </Container>

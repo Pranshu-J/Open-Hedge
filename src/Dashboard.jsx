@@ -29,7 +29,7 @@ export default function Dashboard() {
 
   // Fund History State
   const [fundHistory, setFundHistory] = useState([]);
-  const [selectedFundId, setSelectedFundId] = useState(null);
+  const [selectedFundId, setSelectedFundId] = useState(null); // Can be specific ID or 'ALL'
   const [loadingHistory, setLoadingHistory] = useState(true);
 
   // Holdings / Data State
@@ -72,6 +72,19 @@ export default function Dashboard() {
     }
   }, [decodedCompany]);
 
+  // Helper: Memoized sorted history
+  const sortedHistory = useMemo(() => {
+    return [...fundHistory].sort((a, b) => new Date(b.report_date) - new Date(a.report_date));
+  }, [fundHistory]);
+
+  // Helper: Determine "Effective" ID for Holdings Table
+  // If 'ALL' is selected, we show the holdings of the LATEST fund (index 0).
+  const effectiveFundId = useMemo(() => {
+    if (!selectedFundId) return null;
+    if (selectedFundId === 'ALL') return sortedHistory[0]?.id;
+    return parseInt(selectedFundId);
+  }, [selectedFundId, sortedHistory]);
+
   // Search Handler
   const handleSearch = (event) => {
     const term = event.target.value;
@@ -83,7 +96,7 @@ export default function Dashboard() {
 
   // 2. Initialize Fund Data (Valuations, Previous Holdings, Reset Pagination)
   useEffect(() => {
-    if (!selectedFundId) return;
+    if (!effectiveFundId) return;
     
     const initFundData = async () => {
       setLoadingHoldings(true);
@@ -91,22 +104,35 @@ export default function Dashboard() {
       setPage(0);
       setHasMore(true);
 
-      const sortedHistory = [...fundHistory].sort((a, b) => 
-        new Date(b.report_date) - new Date(a.report_date)
-      );
-      const currentIndex = sortedHistory.findIndex(f => f.id === parseInt(selectedFundId));
-      const prevFund = sortedHistory[currentIndex + 1];
+      const currentIndex = sortedHistory.findIndex(f => f.id === effectiveFundId);
+      
+      // CHANGE: If ALL, compare against the oldest fund. Otherwise, compare against previous.
+      const prevFund = selectedFundId === 'ALL'
+        ? sortedHistory[sortedHistory.length - 1] 
+        : sortedHistory[currentIndex + 1];
 
       setHasPrevFund(!!prevFund);
 
-      const valuationsReq = supabase
-        .from('fund_valuations')
-        .select('valuation_date, value_usd')
-        .eq('fund_id', selectedFundId)
-        .order('valuation_date', { ascending: true });
+      // --- VALUATIONS FETCH LOGIC ---
+      let valuationsReq;
+      if (selectedFundId === 'ALL') {
+         // Fetch valuations for ALL funds associated with this company
+         const allIds = sortedHistory.map(f => f.id);
+         valuationsReq = supabase
+            .from('fund_valuations')
+            .select('valuation_date, value_usd')
+            .in('fund_id', allIds)
+            .order('valuation_date', { ascending: true });
+      } else {
+         // Fetch valuations for SPECIFIC fund
+         valuationsReq = supabase
+            .from('fund_valuations')
+            .select('valuation_date, value_usd')
+            .eq('fund_id', effectiveFundId)
+            .order('valuation_date', { ascending: true });
+      }
 
-      // FIX: Added .limit(10000) to ensure we get ALL previous holdings, not just the default 1000.
-      // Also restored sort order so if we do hit a limit, we keep the most important stocks.
+      // --- HOLDINGS FETCH LOGIC (Always based on effectiveFundId) ---
       const prevHoldingsReq = prevFund 
         ? supabase
             .from('holdings')
@@ -121,7 +147,8 @@ export default function Dashboard() {
       if (!valuationsRes.error && valuationsRes.data.length > 0) {
         const formattedVals = valuationsRes.data.map(v => ({
           ...v,
-          dateStr: new Date(v.valuation_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+          // Added year (yy) to date string so "All Time" charts are readable
+          dateStr: new Date(v.valuation_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' }),
           value_usd: Number(v.value_usd)
         }));
         setValuations(formattedVals);
@@ -144,11 +171,11 @@ export default function Dashboard() {
 
     initFundData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedFundId]);
+  }, [selectedFundId, effectiveFundId]); // Trigger on selectedFundId change
 
   // 3. Fetch Holdings Batch Function
   const fetchHoldingsBatch = async (pageIndex, sortKey, sortDir, isReset = false, search = searchTerm) => {
-    if (!selectedFundId) return;
+    if (!effectiveFundId) return;
     
     const isClientSideSort = sortKey === 'change';
     
@@ -163,7 +190,7 @@ export default function Dashboard() {
     let query = supabase
       .from('holdings')
       .select('*')
-      .eq('fund_id', selectedFundId);
+      .eq('fund_id', effectiveFundId); // Use effective ID
 
     if (search) {
       query = query.ilike('symbol', `%${search}%`);
@@ -213,7 +240,7 @@ export default function Dashboard() {
     });
     
     if (node) observer.current.observe(node);
-  }, [loadingHoldings, loadingMore, hasMore, page, sortConfig, selectedFundId, searchTerm]);
+  }, [loadingHoldings, loadingMore, hasMore, page, sortConfig, effectiveFundId, searchTerm]);
 
   // 5. Handle Sort Click
   const handleSort = (key) => {
@@ -235,9 +262,11 @@ export default function Dashboard() {
         const prevB = prevHoldingsMap[b.symbol] || 0;
         const changeA = a.shares_count - prevA;
         const changeB = b.shares_count - prevB;
+        const percentA = prevA !== 0 ? (changeA / prevA) * 100 : 0;
+        const percentB = prevB !== 0 ? (changeB / prevB) * 100 : 0;
         
-        if (changeA < changeB) return sortConfig.direction === 'asc' ? -1 : 1;
-        if (changeA > changeB) return sortConfig.direction === 'asc' ? 1 : -1;
+        if (percentA < percentB) return sortConfig.direction === 'asc' ? -1 : 1;
+        if (percentA > percentB) return sortConfig.direction === 'asc' ? 1 : -1;
         return 0;
       });
       return items;
@@ -285,7 +314,20 @@ export default function Dashboard() {
       <Container sx={{ pt: 10 }}><Typography color="white">Fund not found.</Typography></Container>
   );
 
-  const currentFundData = fundHistory.find(f => f.id === parseInt(selectedFundId)) || fundHistory[0];
+  const currentFundData = sortedHistory.find(f => f.id === effectiveFundId) || sortedHistory[0];
+
+  // CHANGE: Calculate Return Label and Value dynamically
+  const isAllTime = selectedFundId === 'ALL';
+  const returnLabel = isAllTime ? "All Time Return" : "Quarterly Return";
+  
+  let displayReturn = currentFundData.quarterly_return;
+  
+  if (isAllTime && valuations.length > 0) {
+      const startVal = valuations[0].value_usd;
+      const endVal = valuations[valuations.length - 1].value_usd;
+      // Calculate percentage change from first data point to last
+      displayReturn = startVal ? ((endVal - startVal) / startVal) * 100 : 0;
+  }
 
   return (
     <Fade in={true} timeout={500}>
@@ -313,7 +355,8 @@ export default function Dashboard() {
                 disableUnderline
                 sx={{ color: 'white', fontFamily: theme.typography.fontFamilyMono, fontSize: '1.25rem', '& .MuiSelect-icon': { color: 'white' } }}
               >
-                {[...fundHistory].sort((a, b) => new Date(b.report_date) - new Date(a.report_date)).map(fund => (
+                <MenuItem value="ALL">All Time</MenuItem>
+                {sortedHistory.map(fund => (
                   <MenuItem key={fund.id} value={fund.id}>{fund.report_date}</MenuItem>
                 ))}
               </Select>
@@ -321,11 +364,13 @@ export default function Dashboard() {
           </Grid>
           
            <Grid item xs={12} md={4} sx={{ borderRight: { md: '1px solid #27272a' }, borderBottom: { xs: '1px solid #27272a', md: 'none' }, p: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-            <Typography variant="overline" color="text.secondary" sx={{ mb: 1 }}>Quarterly Return</Typography>
+            {/* UPDATED LABEL */}
+            <Typography variant="overline" color="text.secondary" sx={{ mb: 1 }}>{returnLabel}</Typography>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              {currentFundData.quarterly_return >= 0 ? <TrendingUp sx={{ color: 'white' }} /> : <TrendingDown sx={{ color: 'white' }} />}
+              {/* UPDATED VALUE */}
+              {displayReturn >= 0 ? <TrendingUp sx={{ color: 'white' }} /> : <TrendingDown sx={{ color: 'white' }} />}
               <Typography variant="h5" sx={{ fontFamily: theme.typography.fontFamilyMono, color: 'white' }}>
-                  {currentFundData.quarterly_return > 0 ? "+" : ""}{formatPercent(currentFundData.quarterly_return)}
+                  {displayReturn > 0 ? "+" : ""}{formatPercent(displayReturn)}
               </Typography>
             </Box>
           </Grid>
