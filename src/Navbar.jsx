@@ -115,16 +115,18 @@ export default function Navbar() {
     return location.pathname.startsWith(path);
   };
 
-  // --- Search Logic ---
+  // --- Search Logic (SQL RPC Version) ---
   useEffect(() => {
     let active = true;
 
-    if (inputValue === '') {
+    // Minimum char limit
+    if (inputValue.length < 2) {
       setOptions(options.length > 0 ? options : []);
       return;
     }
 
     const toTitleCase = (str) => {
+      if (!str) return '';
       return str.replace(
         /\w\S*/g,
         (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
@@ -135,23 +137,25 @@ export default function Navbar() {
       setLoading(true);
       
       try {
+        // 1. Funds Search (Standard Query)
         const fundsPromise = supabase
           .from('funds_ranked')
           .select('company_name')
           .ilike('company_name', `%${inputValue}%`)
           .limit(5);
 
+        // 2. Stocks Search (SQL Function Call)
+        // This calls your new 'search_tickers' function in the database.
+        // It handles strict/broad filtering and relevance sorting automatically.
         const stocksPromise = supabase
-          .from('securities_reference') 
-          .select('symbol, description') 
-          .or(`symbol.ilike.%${inputValue}%,description.ilike.%${inputValue}%`) 
-          .limit(20);
+          .rpc('search_tickers', { keyword: inputValue });
 
         const [fundsData, stocksData] = await Promise.all([fundsPromise, stocksPromise]);
 
         if (active) {
           const newOptions = [];
 
+          // Process Funds
           if (fundsData.data) {
             fundsData.data.forEach(fund => {
               newOptions.push({
@@ -163,19 +167,22 @@ export default function Navbar() {
             });
           }
 
+          // Process Stocks (Result is already sorted by relevance from SQL)
           if (stocksData.data) {
             const seenSymbols = new Set();
+            
             stocksData.data.forEach(stock => {
-              if (stock.symbol && !seenSymbols.has(stock.symbol)) {
+              // Deduplicate results
+              if (!seenSymbols.has(stock.symbol)) {
                 seenSymbols.add(stock.symbol);
-                const formattedName = stock.description ? toTitleCase(stock.description) : '';
                 
+                const formattedDesc = toTitleCase(stock.description);
                 newOptions.push({
                   type: 'Stocks',
                   label: stock.symbol,
-                  matchLabel: formattedName ? `${stock.symbol} ${formattedName}` : stock.symbol,
+                  matchLabel: formattedDesc ? `${stock.symbol} ${formattedDesc}` : stock.symbol,
                   value: stock.symbol,
-                  subLabel: formattedName || 'Stock Ticker'
+                  subLabel: formattedDesc || 'Stock Ticker'
                 });
               }
             });

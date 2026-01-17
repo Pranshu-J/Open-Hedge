@@ -5,19 +5,93 @@ import {
   Box, Container, Typography, Paper, Grid, TextField, 
   Button, Table, TableBody, TableCell, TableContainer, 
   TableHead, TableRow, Autocomplete, CircularProgress,
-  IconButton, Breadcrumbs, Link, Fade, InputAdornment
+  IconButton, Breadcrumbs, Link, Fade, InputAdornment,
+  Tooltip
 } from '@mui/material';
 import { 
   Add as AddIcon, 
   Delete as DeleteIcon, 
-  PieChart as PieChartIcon, 
   Lock as LockIcon,
   Login as LoginIcon,
   Search as SearchIcon,
   AttachMoney
 } from '@mui/icons-material';
 import { useNavigate, Link as RouterLink } from 'react-router-dom';
-import theme from './theme'; // Using your theme for font consistency
+import theme from './theme';
+
+// --- Helper Component: Apple Watch Style Ring ---
+const SentimentRing = ({ increased = 0, decreased = 0 }) => {
+  const total = increased + decreased;
+  const score = total === 0 ? 0 : Math.round((increased / total) * 100);
+  
+  // Animation State
+  const [offset, setOffset] = useState(0);
+
+  // SVG Config
+  const size = 45;
+  const strokeWidth = 4;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const targetOffset = circumference - (score / 100) * circumference;
+
+  useEffect(() => {
+    // Start at full circumference (empty) and animate to target
+    setOffset(circumference);
+    const timer = setTimeout(() => {
+      setOffset(targetOffset);
+    }, 100); // Small delay to ensure transition triggers
+    return () => clearTimeout(timer);
+  }, [score, circumference, targetOffset]);
+
+  return (
+    <Tooltip title={`Increased: ${increased} | Decreased: ${decreased}`} arrow placement="top">
+      <Box sx={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', width: size, height: size, margin: 'auto', cursor: 'help' }}>
+        {/* Score Text */}
+        <Typography
+          variant="caption"
+          component="div"
+          sx={{
+            position: 'absolute',
+            color: 'white',
+            fontWeight: 'bold',
+            fontSize: '0.7rem',
+            fontFamily: theme.typography.fontFamilyMono
+          }}
+        >
+          {score}
+        </Typography>
+
+        <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+          {/* Background Ring (Red - represents Decreased) */}
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            stroke="#ef4444" // Red color
+            strokeWidth={strokeWidth}
+            fill="transparent"
+          />
+          {/* Foreground Ring (Green - represents Increased) */}
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            stroke="#22c55e" // Green color
+            strokeWidth={strokeWidth}
+            fill="transparent"
+            strokeDasharray={circumference}
+            strokeDashoffset={offset}
+            strokeLinecap="round"
+            style={{
+              transition: 'stroke-dashoffset 1.5s ease-out', // Smooth spin animation
+              filter: 'drop-shadow(0px 0px 2px rgba(34, 197, 94, 0.5))'
+            }}
+          />
+        </svg>
+      </Box>
+    </Tooltip>
+  );
+};
 
 export default function MyPortfolio() {
   const [session, setSession] = useState(null);
@@ -58,14 +132,53 @@ export default function MyPortfolio() {
 
   const fetchPortfolio = async (userId) => {
     try {
-      const { data, error } = await supabase
+      // 1. Fetch User Portfolio from Profile
+      const { data: profileData, error } = await supabase
         .from('profiles')
         .select('user_details')
         .eq('id', userId)
         .single();
 
       if (error) throw error;
-      setPortfolio(data?.user_details?.portfolio || []);
+      
+      let items = profileData?.user_details?.portfolio || [];
+
+      // 2. Fetch Institutional Data if items exist
+      if (items.length > 0) {
+        const symbols = items.map(p => p.symbol);
+        
+        // Fetch raw JSON from trending_tickers
+        const { data: trendData } = await supabase
+          .from('trending_tickers')
+          .select('symbol, investor_details') 
+          .in('symbol', symbols);
+
+        // 3. Process JSON to calculate sentiment
+        const sentimentMap = (trendData || []).reduce((acc, curr) => {
+          const rawData = curr.investor_details || {};
+          const institutionsList = rawData.institutions || [];
+
+          let increasedCount = 0;
+          let decreasedCount = 0;
+
+          // Iterate through institutions array
+          institutionsList.forEach(inst => {
+            if (inst.shares > 0) increasedCount++;
+            else if (inst.shares < 0) decreasedCount++;
+          });
+
+          acc[curr.symbol] = { increased: increasedCount, decreased: decreasedCount };
+          return acc;
+        }, {});
+
+        // 4. Merge sentiment into portfolio items
+        items = items.map(item => ({
+          ...item,
+          sentiment: sentimentMap[item.symbol] || { increased: 0, decreased: 0 }
+        }));
+      }
+
+      setPortfolio(items);
     } catch (error) {
       console.error('Error fetching portfolio:', error);
     } finally {
@@ -73,24 +186,49 @@ export default function MyPortfolio() {
     }
   };
 
-  // --- 2. Search Logic ---
+  // --- 2. Search Logic (Smart Sort) ---
   useEffect(() => {
     let active = true;
-    if (inputValue === '') {
-      setOptions([]);
+
+    // 1. Minimum Character Limit
+    if (inputValue.length < 2) {
+      setOptions(selectedAsset ? [selectedAsset] : []);
       return;
     }
+
+    const toTitleCase = (str) => {
+      if (!str) return '';
+      return str.replace(
+        /\w\S*/g,
+        (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
+      );
+    };
 
     const fetchSecurities = async () => {
       setSearchLoading(true);
       try {
-        const { data } = await supabase
-          .from('securities_reference')
-          .select('symbol, description')
-          .or(`symbol.ilike.%${inputValue}%,description.ilike.%${inputValue}%`)
-          .limit(10);
+        // Call the SQL function directly ("rpc")
+        const { data, error } = await supabase
+          .rpc('search_tickers', { keyword: inputValue });
 
-        if (active && data) setOptions(data);
+        if (error) throw error;
+
+        if (active && data) {
+           // No manual sorting or filtering needed anymore!
+           const formattedOptions = data.map((stock) => ({
+            cusip: stock.cusip,
+            symbol: stock.symbol,
+            description: toTitleCase(stock.description) || 'Unknown Security',
+            label: `${stock.symbol} ${stock.description || ''}`
+          }));
+          
+          // Remove duplicates
+          const uniqueOptions = formattedOptions.filter((v, i, a) => 
+            a.findIndex(t => (t.symbol === v.symbol)) === i
+          );
+
+          setOptions(uniqueOptions);
+        }
       } catch (err) {
         console.error("Search failed", err);
       } finally {
@@ -100,7 +238,7 @@ export default function MyPortfolio() {
 
     const debounce = setTimeout(fetchSecurities, 300);
     return () => { active = false; clearTimeout(debounce); };
-  }, [inputValue]);
+  }, [inputValue, selectedAsset]);
 
   // --- 3. Add / Remove Logic ---
   const handleAddPosition = async () => {
@@ -109,8 +247,11 @@ export default function MyPortfolio() {
     try {
       const newEntry = {
         id: crypto.randomUUID(),
+        // We store symbol and description for display
         symbol: selectedAsset.symbol,
         name: selectedAsset.description,
+        // We can optionally store CUSIP if needed for deep linking later
+        cusip: selectedAsset.cusip, 
         shares: parseFloat(shares),
         avg_price: parseFloat(price),
         date_added: new Date().toISOString()
@@ -128,9 +269,11 @@ export default function MyPortfolio() {
         .eq('id', session.user.id);
 
       if (error) throw error;
-      setPortfolio(updatedPortfolio);
       
-      // Reset
+      // Re-fetch to get the sentiment data for the new ticker
+      await fetchPortfolio(session.user.id);
+      
+      // Reset Inputs
       setSelectedAsset(null);
       setShares('');
       setPrice('');
@@ -144,7 +287,7 @@ export default function MyPortfolio() {
 
   const handleRemove = async (entryId) => {
     const updatedPortfolio = portfolio.filter(p => p.id !== entryId);
-    setPortfolio(updatedPortfolio); // Optimistic
+    setPortfolio(updatedPortfolio); // Optimistic UI update
 
     const { data: currentData } = await supabase
       .from('profiles').select('user_details').eq('id', session.user.id).single();
@@ -196,7 +339,7 @@ export default function MyPortfolio() {
           <Typography variant="h4" sx={{ fontWeight: 500, color: 'white' }}>My Portfolio</Typography>
         </Box>
 
-        {/* Summary Grid (Matches Dashboard Style) */}
+        {/* Summary Grid */}
         <Grid container spacing={0} sx={{ mb: 4, border: '1px solid #27272a' }}>
           <Grid item size={{ xs: 12, md: 6 }} sx={{ borderRight: { md: '1px solid #27272a' }, borderBottom: { xs: '1px solid #27272a', md: 'none' }, p: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
             <Typography variant="overline" color="text.secondary" sx={{ mb: 1 }}>Position Size</Typography>
@@ -216,22 +359,25 @@ export default function MyPortfolio() {
           </Grid>
         </Grid>
 
-        {/* Add Position Form - Styled like a Toolbar */}
+        {/* Add Position Form */}
         <Paper sx={{ p: 3, mb: 4, bgcolor: '#09090b', border: '1px solid #27272a' }}>
             <Grid container spacing={2} alignItems="center">
               <Grid item size={{ xs: 12, md: 4 }}>
                 <Autocomplete
                   options={options}
+                  // Ensures React can track unique items correctly
                   loading={searchLoading}
-                  getOptionLabel={(option) => `${option.symbol} - ${option.description}`}
+                  getOptionLabel={(option) => option.symbol}
+                  isOptionEqualToValue={(option, value) => option.symbol === value.symbol}
                   filterOptions={(x) => x} 
                   value={selectedAsset}
                   onChange={(e, v) => setSelectedAsset(v)}
                   onInputChange={(e, v) => setInputValue(v)}
+                  noOptionsText={inputValue.length < 2 ? "Type to search..." : "No securities found"}
                   renderInput={(params) => (
                     <TextField 
                       {...params} 
-                      placeholder="Search Ticker to Add..." 
+                      placeholder="Search Ticker (e.g. AAPL)" 
                       size="small"
                       InputProps={{
                         ...params.InputProps,
@@ -248,9 +394,12 @@ export default function MyPortfolio() {
                     />
                   )}
                   renderOption={(props, option) => (
-                    <Box component="li" {...props} sx={{ bgcolor: '#09090b !important', color: 'white', '&:hover': { bgcolor: '#18181b !important' } }}>
-                        <Box>
-                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{option.symbol}</Typography>
+                    <Box component="li" {...props} key={option.cusip || option.symbol} sx={{ bgcolor: '#09090b !important', color: 'white', '&:hover': { bgcolor: '#18181b !important' }, borderBottom: '1px solid #18181b' }}>
+                        <Box sx={{ width: '100%' }}>
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                                <Typography variant="subtitle2" sx={{ fontWeight: 700, color: '#fff' }}>{option.symbol}</Typography>
+                                {/* Optional: Show CUSIP in tooltip or small text if relevant for debugging */}
+                            </Box>
                             <Typography variant="caption" sx={{ color: '#a1a1aa' }}>{option.description}</Typography>
                         </Box>
                     </Box>
@@ -297,7 +446,7 @@ export default function MyPortfolio() {
             </Grid>
         </Paper>
 
-        {/* Portfolio Table (Matches Dashboard Table) */}
+        {/* Portfolio Table */}
         <Paper sx={{ width: '100%', overflow: 'hidden', border: '1px solid #27272a', borderRadius: 0 }}>
           <TableContainer sx={{ maxHeight: 800 }}>
             <Table stickyHeader size="small">
@@ -305,6 +454,7 @@ export default function MyPortfolio() {
                 <TableRow>
                   <TableCell sx={{ bgcolor: '#000', color: '#a1a1aa', borderBottom: '1px solid #27272a' }}>Ticker</TableCell>
                   <TableCell sx={{ bgcolor: '#000', color: '#a1a1aa', borderBottom: '1px solid #27272a' }}>Company</TableCell>
+                  <TableCell align="center" sx={{ bgcolor: '#000', color: '#a1a1aa', borderBottom: '1px solid #27272a' }}>Inst. Sentiment</TableCell>
                   <TableCell align="right" sx={{ bgcolor: '#000', color: '#a1a1aa', borderBottom: '1px solid #27272a' }}>Shares</TableCell>
                   <TableCell align="right" sx={{ bgcolor: '#000', color: '#a1a1aa', borderBottom: '1px solid #27272a' }}>Avg Price</TableCell>
                   <TableCell align="right" sx={{ bgcolor: '#000', color: '#a1a1aa', borderBottom: '1px solid #27272a' }}>Total Cost</TableCell>
@@ -314,7 +464,7 @@ export default function MyPortfolio() {
               <TableBody>
                 {portfolio.length === 0 ? (
                     <TableRow>
-                        <TableCell colSpan={6} align="center" sx={{ py: 8, color: '#52525b' }}>
+                        <TableCell colSpan={7} align="center" sx={{ py: 8, color: '#52525b' }}>
                             Your portfolio is empty. Add a position above.
                         </TableCell>
                     </TableRow>
@@ -327,6 +477,15 @@ export default function MyPortfolio() {
                              </Link>
                         </TableCell>
                         <TableCell sx={{ color: '#a1a1aa' }}>{row.name}</TableCell>
+                        
+                        {/* Sentiment Ring Column */}
+                        <TableCell align="center">
+                          <SentimentRing 
+                            increased={row.sentiment?.increased || 0} 
+                            decreased={row.sentiment?.decreased || 0} 
+                          />
+                        </TableCell>
+
                         <TableCell align="right" sx={{ color: '#d4d4d8', fontFamily: theme.typography.fontFamilyMono }}>{row.shares}</TableCell>
                         <TableCell align="right" sx={{ color: '#d4d4d8', fontFamily: theme.typography.fontFamilyMono }}>${row.avg_price.toFixed(2)}</TableCell>
                         <TableCell align="right" sx={{ color: '#fff', fontWeight: 600, fontFamily: theme.typography.fontFamilyMono }}>
